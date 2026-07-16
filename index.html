@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GIA Splitter</title>
+  <meta name="description" content="Interactive .gia splitting utility: inspect each model's Decoration entries, select any subset, and move it into a new model. Runs entirely in your browser.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>✂️</text></svg>">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand">
+        <div class="brand-mark">✂</div>
+        <div class="brand-text">GIA<span>Splitter</span></div>
+        <div class="brand-tag">Interactive Decoration-list splitter</div>
+      </div>
+      <div id="file-meta" class="file-meta hidden">
+        <span id="meta-name" class="meta-name"></span>
+        <span id="meta-stats" class="meta-stats"></span>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-open" class="btn ghost">Open .gia…</button>
+        <input type="file" id="file-input" accept=".gia" hidden>
+      </div>
+    </header>
+
+    <main id="main">
+
+      <div id="dropzone">
+        <div class="drop-card">
+          <div class="drop-icon">✂</div>
+          <h1>GIA Splitter</h1>
+          <p>Load a <strong>.gia</strong> file, pick a model, select any of its Decoration
+            entries, and move them into a new model — as many times as you like —
+            then download the updated file. <strong>Everything you don't touch is
+            preserved byte-for-byte</strong>, whatever it contains.</p>
+          <button id="btn-open-hero" class="btn primary big">Choose a .gia file</button>
+          <p class="hint">…or drag &amp; drop it anywhere on this page.<br>
+            Everything runs locally in your browser — nothing is uploaded.</p>
+        </div>
+      </div>
+
+      <div id="workbench" class="hidden">
+
+        <aside id="model-panel">
+          <div class="panel-head">
+            <h2>Models</h2>
+            <span id="model-count" class="pill"></span>
+          </div>
+          <div id="model-list"></div>
+        </aside>
+
+        <section id="detail-panel">
+          <div id="detail-head">
+            <div class="detail-title">
+              <h3 id="detail-name"></h3>
+              <span id="detail-count" class="pill"></span>
+            </div>
+            <div class="detail-actions">
+              <button id="btn-select-all" class="btn tiny">Select all</button>
+              <button id="btn-select-none" class="btn tiny">Clear</button>
+            </div>
+          </div>
+
+          <div id="split-bar">
+            <span id="split-info" class="split-info">No Decoration entries selected.</span>
+            <button id="btn-split" class="btn primary" disabled>Split selected</button>
+          </div>
+
+          <div id="dec-table-wrap">
+            <table id="dec-table">
+              <thead>
+                <tr><th class="col-check"></th><th class="num">#</th><th>Name</th><th class="num">ID</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <p class="hint table-hint">Click to select a row · Ctrl+click to toggle · Shift+click to select a range.
+              Selected entries move, in order, into a new model created next to this one.</p>
+          </div>
+        </section>
+
+      </div>
+    </main>
+
+    <footer id="export-bar" class="hidden">
+      <div class="export-summary">
+        <div class="chip"><b id="ex-models"></b><span>models</span></div>
+        <div class="chip"><b id="ex-splits"></b><span>splits made</span></div>
+        <div class="chip"><b id="ex-size"></b><span>output size</span></div>
+      </div>
+      <div class="export-name">
+        <label for="set-name" class="export-label">Output file name</label>
+        <input type="text" id="set-name" spellcheck="false">
+      </div>
+      <div class="export-actions">
+        <button id="btn-reset" class="btn ghost" title="Discard all splits and restore the loaded file">Reset</button>
+        <button id="btn-download" class="btn primary">Download .gia</button>
+      </div>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
