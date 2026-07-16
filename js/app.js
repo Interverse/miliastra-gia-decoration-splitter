@@ -47,15 +47,32 @@ for (const l of LANGS) {
 }
 els.langSelect.addEventListener('change', () => setLanguage(els.langSelect.value));
 
+// size the dropdown to the current selection, not the longest option
+const langMeasure = document.createElement('canvas').getContext('2d');
+function fitLangSelect() {
+  const opt = els.langSelect.selectedOptions[0];
+  if (!opt) return;
+  const cs = getComputedStyle(els.langSelect);
+  langMeasure.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const text = langMeasure.measureText(opt.textContent).width;
+  const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  els.langSelect.style.width = `${Math.ceil(text + pad) + 4}px`;
+}
+document.fonts?.ready.then(fitLangSelect);
+
 onLangChange(() => {
   els.langSelect.value = currentLang();
+  fitLangSelect();
   if (state.session) {
     renderMeta();
     renderAll();
   }
 });
 
-initI18n().then(() => { els.langSelect.value = currentLang(); });
+initI18n().then(() => {
+  els.langSelect.value = currentLang();
+  fitLangSelect();
+});
 
 // localized message for engine/UI errors (engine errors carry err.i18n codes)
 const errMsg = (err, fallbackKey) =>
