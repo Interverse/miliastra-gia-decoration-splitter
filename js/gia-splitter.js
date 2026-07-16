@@ -22,6 +22,14 @@
 const utf8 = new TextDecoder();
 const utf8enc = new TextEncoder();
 
+// Errors carry an i18n code + params so the UI can localize them; the
+// message itself stays English for logs and tests.
+function fail(message, key, params) {
+  const e = new Error(message);
+  e.i18n = { key, params };
+  throw e;
+}
+
 // ---------- low-level protobuf ----------
 
 function readVarint(b, o) {
@@ -56,7 +64,7 @@ function parseMsg(b) {
     } else if (wire === 2) {
       let len; [len, o] = readVarint(b, o);
       const n = Number(len);
-      if (o + n > b.length) throw new Error('Corrupt message: field overruns buffer');
+      if (o + n > b.length) fail('Corrupt message: field overruns buffer', 'err.corrupt');
       items.push({ field, wire, val: b.subarray(o, o + n) });
       o += n;
     } else if (wire === 5) {
@@ -64,7 +72,7 @@ function parseMsg(b) {
     } else if (wire === 1) {
       items.push({ field, wire, val: b.subarray(o, o + 8) }); o += 8;
     } else {
-      throw new Error(`Unsupported wire type ${wire}`);
+      fail(`Unsupported wire type ${wire}`, 'err.corrupt');
     }
   }
   return items;
@@ -289,14 +297,14 @@ function rebuildDecorationParent(entryBody, newParent) {
 export class GiaSession {
   constructor(input) {
     const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-    if (bytes.length < 24) throw new Error('File is too small to be a .gia.');
+    if (bytes.length < 24) fail('File is too small to be a .gia.', 'err.tooSmall');
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     this._magic = [dv.getUint32(4, false), dv.getUint32(8, false), dv.getUint32(12, false)];
     if (this._magic[0] !== 1 || this._magic[1] !== 806 || this._magic[2] !== 3) {
-      throw new Error(`Not a .gia file (header ${this._magic.join('/')}, expected 1/806/3).`);
+      fail(`Not a .gia file (header ${this._magic.join('/')}, expected 1/806/3).`, 'err.notGia', { header: this._magic.join('/') });
     }
     const payloadLen = dv.getUint32(16, false);
-    if (20 + payloadLen > bytes.length) throw new Error('Corrupt .gia: payload length exceeds file size.');
+    if (20 + payloadLen > bytes.length) fail('Corrupt .gia: payload length exceeds file size.', 'err.corrupt');
 
     this._bytes = bytes;
     this._tail = bytes.subarray(20 + payloadLen);
@@ -341,6 +349,7 @@ export class GiaSession {
     });
 
     this._nextGuid = maxGuid + 1;
+    this._nextUid = this._models.length;
     this.splitCount = 0;
     this.meta = {
       exportName: (exportTag.match(/\\(.+)\.gia$/) || [])[1] ?? '',
@@ -351,14 +360,17 @@ export class GiaSession {
     };
   }
 
-  // Display view of every model, in file order (new models follow their source).
+  // Display view of every model, in file order (new models follow their
+  // source). `id` is the current position; `uid` is stable across splits.
   get models() {
     return this._models.map((m, id) => ({
       id,
+      uid: m.uid,
       name: m.name,
       guid: m.guid,
       count: m.decGuids.length,
       isNew: m.isNew,
+      hasGraph: !m.isNew && m.otherRefGuids.length > 0,
     }));
   }
 
@@ -388,20 +400,22 @@ export class GiaSession {
   // preserved on both sides. Returns the new model's id.
   splitModel(modelId, indices) {
     const m = this._models[modelId];
-    if (!m) throw new Error('Unknown model.');
+    if (!m) fail('Unknown model.', 'err.unknownModel');
     const uniq = [...new Set(indices)].sort((a, b) => a - b);
-    if (uniq.length === 0) throw new Error('Select at least one Decoration entry to split.');
-    if (uniq[0] < 0 || uniq[uniq.length - 1] >= m.decGuids.length) throw new Error('Selection is out of range.');
+    if (uniq.length === 0) fail('Select at least one Decoration entry to split.', 'err.selectDec');
+    if (uniq[0] < 0 || uniq[uniq.length - 1] >= m.decGuids.length) fail('Selection is out of range.', 'err.range');
 
     const picked = new Set(uniq);
     const moved = [], remaining = [];
     m.decGuids.forEach((g, i) => (picked.has(i) ? moved : remaining).push(g));
 
     const clone = {
+      uid: this._nextUid++,
       srcTopIndex: m.srcTopIndex,
       srcBody: m.srcBody,
       srcAllDecSet: m.srcAllDecSet,
       srcDecGuids: null,
+      otherRefGuids: [],
       guid: this._nextGuid++,
       name: this.previewSplitName(modelId),
       decGuids: moved,
@@ -413,8 +427,19 @@ export class GiaSession {
     return modelId + 1;
   }
 
-  serialize() {
-    if (!this.changed) return this._bytes; // untouched input, byte for byte
+  // Serialize the project. `selectedUids` (array/Set of model uids) limits
+  // the export to those models: unselected models are omitted along with
+  // their Decoration entries and any entries (e.g. node graphs) referenced
+  // only by omitted models. Everything kept is preserved exactly as the
+  // full export would emit it. Omit the argument to export every model.
+  serialize(selectedUids = null) {
+    const sel = selectedUids == null ? null : new Set(selectedUids);
+    const included = (m) => sel === null || sel.has(m.uid);
+    const models = this._models.filter(included);
+    if (models.length === 0) fail('Select at least one model to export.', 'err.selectModel');
+    const excludesAny = models.length !== this._models.length;
+
+    if (!this.changed && !excludesAny) return this._bytes; // untouched input, byte for byte
 
     // group live models by their source entry, preserving display order
     const groups = new Map();
@@ -423,17 +448,37 @@ export class GiaSession {
       groups.get(m.srcTopIndex).push(m);
     }
 
-    // decorations owned by a new model get their parent reference rewritten
+    // decorations owned by a new model get their parent reference rewritten;
+    // decorations owned by an excluded model are dropped from the export
     const reparent = new Map();
+    const dropDec = new Set();
     for (const m of this._models) {
-      if (!m.isNew) continue;
-      for (const g of m.decGuids) reparent.set(g, m.guid);
+      if (!included(m)) {
+        for (const g of m.decGuids) dropDec.add(g);
+      } else if (m.isNew) {
+        for (const g of m.decGuids) reparent.set(g, m.guid);
+      }
     }
+
+    // non-decoration entries (e.g. node graphs) are dropped only when every
+    // model referencing them is excluded; unreferenced entries always stay
+    const otherRefOwners = new Map(); // entry guid -> [model, ...]
+    for (const m of this._models) {
+      for (const g of m.otherRefGuids) {
+        if (!otherRefOwners.has(g)) otherRefOwners.set(g, []);
+        otherRefOwners.get(g).push(m);
+      }
+    }
+    const keepOther = (guid) => {
+      const owners = otherRefOwners.get(guid);
+      return !owners || owners.some(included);
+    };
 
     const out = [];
     this._top.forEach((it, idx) => {
       if (it.field === 1 && it.wire === 2 && groups.has(idx)) {
         for (const m of groups.get(idx)) {
+          if (!included(m)) continue;
           if (!m.isNew && m.srcDecGuids && m.decGuids.length === m.srcDecGuids.length
               && m.decGuids.every((g, i) => g === m.srcDecGuids[i])) {
             out.push(it); // never touched → verbatim
@@ -449,9 +494,14 @@ export class GiaSession {
         }
       } else if (it.field === 2 && it.wire === 2) {
         const e = summarizeEntry(it.val);
-        if (e.cls === 28 && reparent.has(e.guid)) {
-          out.push({ field: 2, wire: 2, val: rebuildDecorationParent(it.val, reparent.get(e.guid)) });
-        } else {
+        if (e.cls === 28) {
+          if (dropDec.has(e.guid)) return;
+          if (reparent.has(e.guid)) {
+            out.push({ field: 2, wire: 2, val: rebuildDecorationParent(it.val, reparent.get(e.guid)) });
+          } else {
+            out.push(it);
+          }
+        } else if (keepOther(e.guid)) {
           out.push(it);
         }
       } else {

@@ -198,5 +198,70 @@ for (const f of files) {
     && dst.decorations.length === 2);
 }
 
+// 7) selective model export
+{
+  const bytes = load('Autumn Sword Auto Assemble.gia');
+  const s = new GiaSession(bytes);
+
+  // selecting every model without splits is still byte-identical
+  const allUids = s.models.map((m) => m.uid);
+  check('select: full selection without splits is byte-identical', eq(s.serialize(allUids), bytes));
+
+  // empty selection rejected
+  let threw = false;
+  try { s.serialize([]); } catch { threw = true; }
+  check('select: empty selection rejected', threw);
+
+  // exclude one untouched model (no splits at all)
+  const dropUid = s.models[1].uid; // autumn_sword_2 (owns no graph)
+  const keepUids = allUids.filter((u) => u !== dropUid);
+  const out = s.serialize(keepUids);
+  const dst = parseGia(out);
+  check('select: excluded model omitted', dst.objects.length === 2
+    && !dst.objects.some((o) => o.name === 'autumn_sword_2'),
+    dst.objects.map((o) => `${o.name}:${o.decorationGuids.length}`).join(', '));
+  check('select: excluded model\'s decorations omitted',
+    dst.decorations.length === 2541 - 543);
+
+  // kept entries byte-identical, graph + strings intact
+  const a = rawView(bytes), b = rawView(out);
+  check('select: node-graph entries preserved',
+    a.graphs.length === b.graphs.length && a.graphs.every((g, i) => eq(g, b.graphs[i])));
+  check('select: export tag + engine version preserved',
+    a.strings.length === b.strings.length && a.strings.every((x, i) => eq(x, b.strings[i])));
+  let keptIdentical = true;
+  for (const [g, raw] of b.decs) {
+    const srcRaw = a.decs.get(g);
+    if (!srcRaw || !eq(raw, srcRaw)) keptIdentical = false;
+  }
+  check('select: kept decoration entries byte-identical', keptIdentical);
+
+  // graph owned by an excluded model gets dropped with it
+  const graphOwner = s.models.find((m) => m.hasGraph);
+  check('select: graph-owning model detected', !!graphOwner, graphOwner?.name);
+  const noOwner = s.serialize(allUids.filter((u) => u !== graphOwner.uid));
+  check('select: graph dropped when its owner is excluded', rawView(noOwner).graphs.length === 0);
+
+  // split + selection: export only the new model
+  const s2 = new GiaSession(bytes);
+  const src0 = s2.decorations(0).map((d) => d.guid);
+  s2.splitModel(0, [1, 3, 5]);
+  const newUid = s2.models[1].uid;
+  const onlyNew = parseGia(s2.serialize([newUid]));
+  check('select: exporting only the new model works', onlyNew.objects.length === 1
+    && onlyNew.objects[0].name === 'autumn_sword_3_2'
+    && eq(onlyNew.objects[0].decorationGuids, [src0[1], src0[3], src0[5]])
+    && onlyNew.decorations.length === 3);
+  check('select: new-model decorations reparented in selective export',
+    onlyNew.decorations.every((d) => d.parentGuid === onlyNew.objects[0].guid));
+
+  // partial selection after split: original + untouched models, without the new one
+  const withoutNew = parseGia(s2.serialize(s2.models.filter((m) => m.uid !== newUid).map((m) => m.uid)));
+  check('select: original keeps remaining entries when new model excluded',
+    withoutNew.objects.length === 3
+    && withoutNew.objects.find((o) => o.name === 'autumn_sword_3').decorationGuids.length === 996
+    && withoutNew.decorations.length === 2541 - 3);
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll tests passed.');
 process.exit(failures ? 1 : 0);

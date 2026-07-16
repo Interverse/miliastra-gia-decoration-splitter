@@ -19,8 +19,16 @@
 
 html, body { margin: 0; height: 100%; }
 
+/* Base stack covers Latin, Cyrillic, Vietnamese (all system UI fonts carry
+   full Vietnamese diacritics), plus broad CJK and Thai fallbacks so every
+   supported language renders on Windows, macOS, Linux, and mobile. */
 body {
-  font-family: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family:
+    "Inter", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", "PingFang SC", "Hiragino Sans", "Microsoft YaHei",
+    "Microsoft JhengHei", "Yu Gothic UI", Meiryo, "Malgun Gothic",
+    "Apple SD Gothic Neo", "Leelawadee UI", Thonburi, "Noto Sans Thai",
+    sans-serif;
   background:
     radial-gradient(1100px 520px at 75% -12%, rgba(91, 140, 255, 0.1), transparent 60%),
     radial-gradient(900px 460px at 15% 112%, rgba(57, 208, 216, 0.08), transparent 60%),
@@ -29,6 +37,16 @@ body {
   font-size: 14px;
   overflow: hidden;
 }
+
+/* Language-specific preferred fonts (html[lang] is set by the i18n system) */
+:lang(zh-Hans) body { font-family: "Segoe UI", system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif; }
+:lang(zh-Hant) body { font-family: "Segoe UI", system-ui, "PingFang TC", "Hiragino Sans CNS", "Microsoft JhengHei", "Noto Sans TC", sans-serif; }
+:lang(ja) body { font-family: "Segoe UI", system-ui, "Hiragino Sans", "Yu Gothic UI", Meiryo, "Noto Sans JP", sans-serif; }
+:lang(ko) body { font-family: "Segoe UI", system-ui, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif; }
+:lang(th) body { font-family: "Segoe UI", system-ui, "Leelawadee UI", Thonburi, "Noto Sans Thai", sans-serif; }
+/* Thai stacked diacritics need extra line height to avoid clipping */
+:lang(th) body, :lang(th) .btn, :lang(th) .hint, :lang(th) .split-info,
+:lang(th) .chip span, :lang(th) .export-count { line-height: 1.6; }
 
 /* themed scrollbars */
 * { scrollbar-width: thin; scrollbar-color: #333a4a #12151d; }
@@ -83,7 +101,32 @@ body {
 .meta-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta-stats { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
 
-.topbar-actions { margin-left: auto; display: flex; gap: 8px; }
+.topbar-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* ---------- language selector ---------- */
+.lang-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0 4px 0 10px;
+}
+.lang-icon { font-size: 13px; opacity: 0.8; }
+#lang-select {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 6px;
+  outline: none;
+  cursor: pointer;
+  max-width: 160px;
+}
+#lang-select option { background: var(--panel-2); color: var(--text); }
 
 /* ---------- buttons ---------- */
 .btn {
@@ -148,9 +191,9 @@ body {
 
 .hint { font-size: 11.5px; line-height: 1.5; color: var(--muted); }
 
-/* page-wide drag overlay */
+/* page-wide drag overlay (label localized via data-drop-label, set by i18n) */
 body.dragging::after {
-  content: "Drop .gia file to load";
+  content: attr(data-drop-label);
   position: fixed;
   inset: 0;
   display: grid;
@@ -202,7 +245,27 @@ body.dragging::after {
   background: var(--panel-2);
 }
 
-#model-list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
+.model-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.export-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.export-count.warn { color: #f0a35c; }
+
+#model-list { flex: 1; overflow-y: auto; padding: 6px 8px 8px; }
+
+.panel-hint { margin: 0; padding: 8px 14px 12px; border-top: 1px solid var(--border-soft); }
 
 .model-row {
   display: flex;
@@ -222,6 +285,13 @@ body.dragging::after {
   0% { background: rgba(57, 208, 216, 0.35); }
   100% { background: transparent; }
 }
+
+.model-row .model-export { accent-color: var(--accent); margin: 0; cursor: pointer; flex-shrink: 0; }
+/* excluded from export: dimmed content, but viewing/selection stays intact */
+.model-row.excluded .model-name,
+.model-row.excluded .model-count,
+.model-row.excluded .tag-new,
+.model-row.excluded .tag-graph { opacity: 0.42; }
 
 .model-name { flex: 1; min-width: 0; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .model-badges { display: flex; align-items: center; gap: 7px; }
@@ -252,7 +322,8 @@ body.dragging::after {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 10px 14px;
   padding: 13px 18px 11px;
   border-bottom: 1px solid var(--border-soft);
 }
@@ -264,12 +335,13 @@ body.dragging::after {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 8px 14px;
   padding: 10px 18px;
   background: rgba(23, 27, 37, 0.6);
   border-bottom: 1px solid var(--border-soft);
 }
-.split-info { font-size: 12.5px; color: var(--muted); }
+.split-info { font-size: 12.5px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
 .split-info.armed { color: var(--text); }
 .split-info b { color: var(--accent-2); font-weight: 700; }
 
@@ -329,6 +401,18 @@ body.dragging::after {
 .chip b { font-size: 14.5px; font-weight: 700; }
 .chip span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
 .chip b .arrow { color: var(--accent-2); font-weight: 400; padding: 0 3px; }
+.chip b.partial { color: var(--accent-2); }
+
+.tag-graph {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
 
 .export-name { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 4px; }
 .export-label {

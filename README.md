@@ -9,17 +9,30 @@ doesn't recognize.
 
 Everything runs client-side in the browser — no server, nothing is uploaded.
 
+The interface is fully localized into 15 languages — the 14 officially supported
+by Genshin Impact plus Italian: English, 简体中文, 繁體中文, 日本語, 한국어,
+Français, Deutsch, Español, Português, Русский, ไทย, Tiếng Việt,
+Bahasa Indonesia, Türkçe, Italiano — with a runtime language selector in the
+top bar (no reload needed).
+
 ## Usage
 
 1. Open the site and drop a `.gia` file anywhere on the page (or click *Choose a .gia file*).
 2. Pick a model in the left-hand list (each shows its Decoration entry count).
+   Every model also has an **export checkbox** right in the sidebar — checked models
+   are included in the download; unchecked ones are dimmed. This is independent of
+   which model is open for viewing.
 3. Select entries in the Decoration table — click to select, **Ctrl+click** to toggle,
    **Shift+click** for ranges, or use the checkboxes / *Select all*. The bar above the
    table shows exactly how many entries will move and the name of the model they'll
    move into.
 4. Hit **Split selected**. The new model appears in the list right after its source;
    you can keep splitting any model, including newly created ones.
-5. Download the resulting `.gia` (or *Reset* to discard all splits).
+5. Choose which models the download includes using the sidebar checkboxes, with
+   **Select all / Deselect all** at the top of the Models panel. Badges mark newly
+   created models and node-graph owners. The selection persists until you change
+   it, load another file, or Reset; newly created models are included by default.
+6. Download the resulting `.gia` (or *Reset* to discard all splits).
 
 ## How splitting works
 
@@ -38,6 +51,29 @@ surgery on the container and copies everything else verbatim:
 - Entries the tool doesn't understand (node graphs, unknown classes, unknown fields
   at any level) are emitted exactly as they appeared in the source. A file exported
   without any splits is byte-identical to the input.
+- **Selective export**: deselected models are omitted together with their Decoration
+  entries; a node graph is dropped only when every model referencing it is excluded.
+  Every model and entry that stays in the export is emitted exactly as a full export
+  would emit it.
+
+## Localization
+
+- `js/i18n.js` — tiny dependency-free system: `t(key, params)`, plural-aware
+  `tn(key, n)` (via `Intl.PluralRules`), locale number formatting `num()`
+  (via `Intl.NumberFormat`), `data-i18n` / `data-i18n-title` /
+  `data-i18n-placeholder` bindings for static DOM, and an `onLangChange`
+  hook that re-renders dynamic UI. Switching languages never reloads the page.
+- English ships in the bundle and is the **fallback for every key**, so missing
+  translations degrade to English — never to raw keys or blanks.
+- Other locales load on demand from `js/locales/<code>.js`. **Adding a language
+  = adding one file + one row in `LANGS`** — no application code changes.
+- The saved choice persists in localStorage; first visit auto-detects from the
+  browser language (including zh-Hans/zh-Hant disambiguation).
+- Engine errors carry i18n codes (`err.i18n`) so validation messages localize
+  while logs and tests keep English text.
+- Font stacks cover Latin, Cyrillic, Vietnamese, CJK, and Thai on all major
+  OSes, with per-language `:lang()` preferences and extra Thai line-height;
+  layouts wrap gracefully for long German/Russian strings.
 
 ## Project layout
 
@@ -46,6 +82,7 @@ surgery on the container and copies everything else verbatim:
 | `index.html`, `css/style.css` | UI shell (master-detail: model list + Decoration table) |
 | `js/app.js` | app logic (import → select → split → download) |
 | `js/gia-splitter.js` | `GiaSession` — the byte-preserving split engine (self-contained, no dependencies) |
+| `js/i18n.js`, `js/locales/*.js` | localization system + the 15 language dictionaries |
 | `tools/test-splitter.mjs` | verification suite (`node tools/test-splitter.mjs`) |
 | `tools/gia-parser.js` | legacy geometry-aware parser, used only as an independent cross-check in tests |
 | `reference/` | format handoff docs and sample .gia fixtures |
@@ -73,8 +110,9 @@ node tools/test-splitter.mjs
 Verifies, against the sample fixtures: lossless protobuf re-encoding, byte-identical
 no-op serialization, order preservation for scattered selections, parent-reference
 correctness, byte-identity of node graphs and unmoved Decoration entries, repeated
-splits (including splitting a newly created model), and edge cases such as moving
-every entry out of a model.
+splits (including splitting a newly created model), selective export (omitted models
+and their entries, graph ownership, exporting only a new model), and edge cases such
+as moving every entry out of a model.
 
 ## Deploy to GitHub Pages
 

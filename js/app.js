@@ -2,8 +2,10 @@
 // Workflow: import a .gia → pick a model → select Decoration entries
 // (click / Ctrl / Shift) → Split selected → repeat as needed → download.
 // All splitting is byte-preserving; see js/gia-splitter.js.
+// All user-facing text goes through js/i18n.js (t/tn/num + data-i18n).
 
 import { GiaSession } from './gia-splitter.js';
+import { t, tn, num, LANGS, currentLang, setLanguage, initI18n, onLangChange } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -16,9 +18,12 @@ const els = {
   btnSelectAll: $('btn-select-all'), btnSelectNone: $('btn-select-none'),
   splitInfo: $('split-info'), btnSplit: $('btn-split'),
   decBody: $('dec-table').querySelector('tbody'),
-  exportBar: $('export-bar'), exModels: $('ex-models'), exSplits: $('ex-splits'),
-  exSize: $('ex-size'), setName: $('set-name'),
+  exportBar: $('export-bar'), exModels: $('ex-models'), exSelected: $('ex-selected'),
+  exSplits: $('ex-splits'), exSize: $('ex-size'), setName: $('set-name'),
+  btnModelsAll: $('btn-models-all'), btnModelsNone: $('btn-models-none'),
+  exportCount: $('export-count'),
   btnReset: $('btn-reset'), btnDownload: $('btn-download'), toast: $('toast'),
+  langSelect: $('lang-select'),
 };
 
 const state = {
@@ -29,7 +34,32 @@ const state = {
   sel: new Set(),     // selected row indices in the current model
   anchor: null,       // shift-selection anchor
   rows: [],           // <tr> per decoration index
+  exportSel: new Set() // uids of models included in the export
 };
+
+// ---------- language ----------
+
+for (const l of LANGS) {
+  const opt = document.createElement('option');
+  opt.value = l.code;
+  opt.textContent = l.name; // native names — never translated
+  els.langSelect.appendChild(opt);
+}
+els.langSelect.addEventListener('change', () => setLanguage(els.langSelect.value));
+
+onLangChange(() => {
+  els.langSelect.value = currentLang();
+  if (state.session) {
+    renderMeta();
+    renderAll();
+  }
+});
+
+initI18n().then(() => { els.langSelect.value = currentLang(); });
+
+// localized message for engine/UI errors (engine errors carry err.i18n codes)
+const errMsg = (err, fallbackKey) =>
+  err?.i18n ? t(err.i18n.key, err.i18n.params) : t(fallbackKey);
 
 // ---------- file loading ----------
 
@@ -62,7 +92,7 @@ async function loadFile(file) {
     startSession(session);
   } catch (err) {
     console.error(err);
-    toast(err.message || 'Failed to read that file.');
+    toast(errMsg(err, 'err.readFail'));
   }
 }
 
@@ -71,13 +101,11 @@ function startSession(session) {
   state.currentModel = 0;
   state.sel = new Set();
   state.anchor = null;
+  // a new project starts with every model included in the export
+  state.exportSel = new Set(session.models.map((m) => m.uid));
 
-  const base = session.meta.exportName || state.fileName;
-  els.metaName.textContent = base;
-  els.metaStats.textContent =
-    `${session.meta.modelsBefore} model${session.meta.modelsBefore === 1 ? '' : 's'} · ${session.meta.decorationEntries.toLocaleString()} Decoration entries · engine ${session.meta.engineVersion || '?'}`;
-  els.fileMeta.classList.remove('hidden');
-  els.setName.value = `${base} Split`;
+  renderMeta();
+  els.setName.value = t('export.defaultName', { base: baseName() });
 
   els.dropzone.classList.add('hidden');
   els.workbench.classList.remove('hidden');
@@ -85,23 +113,54 @@ function startSession(session) {
   renderAll();
 }
 
+function baseName() {
+  return state.session?.meta.exportName || state.fileName;
+}
+
+function renderMeta() {
+  const meta = state.session.meta;
+  els.metaName.textContent = baseName();
+  els.metaStats.textContent = [
+    tn('meta.models', meta.modelsBefore),
+    tn('meta.entries', meta.decorationEntries),
+    t('meta.engine', { v: meta.engineVersion || '?' }),
+  ].join(' · ');
+  els.fileMeta.classList.remove('hidden');
+}
+
 // ---------- model list (master) ----------
 
 function renderModels(highlightId = null) {
   const models = state.session.models;
-  els.modelCount.textContent = models.length;
+  els.modelCount.textContent = num(models.length);
   els.modelList.textContent = '';
   const frag = document.createDocumentFragment();
   for (const m of models) {
+    const exported = state.exportSel.has(m.uid);
     const row = document.createElement('div');
     row.className = 'model-row'
       + (m.id === state.currentModel ? ' active' : '')
+      + (exported ? '' : ' excluded')
       + (m.id === highlightId ? ' flash' : '');
     row.addEventListener('click', () => selectModel(m.id));
 
+    // export inclusion — independent from which model is open for viewing
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'model-export';
+    cb.checked = exported;
+    cb.title = t('models.includeTip');
+    cb.addEventListener('click', (e) => e.stopPropagation());
+    cb.addEventListener('change', () => {
+      if (cb.checked) state.exportSel.add(m.uid);
+      else state.exportSel.delete(m.uid);
+      row.classList.toggle('excluded', !cb.checked);
+      renderExport();
+    });
+
     const name = document.createElement('span');
     name.className = 'model-name';
-    name.textContent = m.name || '(unnamed)';
+    name.textContent = m.name || t('model.unnamed');
     name.title = m.name;
 
     const badges = document.createElement('span');
@@ -109,19 +168,38 @@ function renderModels(highlightId = null) {
     if (m.isNew) {
       const tag = document.createElement('span');
       tag.className = 'tag-new';
-      tag.textContent = 'new';
+      tag.textContent = t('tag.new');
+      badges.appendChild(tag);
+    }
+    if (m.hasGraph) {
+      const tag = document.createElement('span');
+      tag.className = 'tag-graph';
+      tag.textContent = t('tag.graph');
+      tag.title = t('tag.graphTip');
       badges.appendChild(tag);
     }
     const count = document.createElement('span');
     count.className = 'model-count';
-    count.textContent = m.count.toLocaleString();
+    count.textContent = num(m.count);
+    count.title = tn('model.countTip', m.count);
     badges.appendChild(count);
 
-    row.append(name, badges);
+    row.append(cb, name, badges);
     frag.appendChild(row);
   }
   els.modelList.appendChild(frag);
 }
+
+els.btnModelsAll.addEventListener('click', () => {
+  state.exportSel = new Set(state.session.models.map((m) => m.uid));
+  renderModels();
+  renderExport();
+});
+els.btnModelsNone.addEventListener('click', () => {
+  state.exportSel.clear();
+  renderModels();
+  renderExport();
+});
 
 function selectModel(id) {
   if (id === state.currentModel) return;
@@ -138,8 +216,8 @@ function renderDetail() {
   const model = state.session.models[state.currentModel];
   const decs = state.session.decorations(state.currentModel);
 
-  els.detailName.textContent = model.name || '(unnamed)';
-  els.detailCount.textContent = `${decs.length.toLocaleString()} entr${decs.length === 1 ? 'y' : 'ies'}`;
+  els.detailName.textContent = model.name || t('model.unnamed');
+  els.detailCount.textContent = tn('detail.entries', decs.length);
 
   els.decBody.textContent = '';
   state.rows = [];
@@ -158,7 +236,7 @@ function renderDetail() {
 
     const tdIdx = document.createElement('td');
     tdIdx.className = 'num muted';
-    tdIdx.textContent = d.index;
+    tdIdx.textContent = d.index; // position identifier — never locale-formatted
 
     const tdName = document.createElement('td');
     tdName.className = 'dec-name';
@@ -167,7 +245,7 @@ function renderDetail() {
 
     const tdId = document.createElement('td');
     tdId.className = 'num dec-id';
-    if (d.guid != null) tdId.textContent = d.guid;
+    if (d.guid != null) tdId.textContent = d.guid; // identifier — no grouping
     else { tdId.textContent = '—'; tdId.classList.add('muted'); }
 
     tr.append(tdCheck, tdIdx, tdName, tdId);
@@ -224,14 +302,17 @@ function syncSelection() {
   }
   const n = state.sel.size;
   els.btnSplit.disabled = n === 0;
-  els.btnSplit.textContent = n ? `Split ${n.toLocaleString()} selected` : 'Split selected';
+  els.btnSplit.textContent = n ? t('split.buttonN', { n: num(n) }) : t('split.button');
   if (n === 0) {
-    els.splitInfo.textContent = 'No Decoration entries selected.';
+    els.splitInfo.textContent = t('split.none');
     els.splitInfo.classList.remove('armed');
   } else {
     const target = state.session.previewSplitName(state.currentModel);
-    els.splitInfo.innerHTML =
-      `<b>${n.toLocaleString()}</b> of ${state.rows.length.toLocaleString()} entries will move to new model <b>${escapeHtml(target)}</b>`;
+    els.splitInfo.innerHTML = t('split.info', {
+      n: num(n),
+      total: num(state.rows.length),
+      name: escapeHtml(target),
+    });
     els.splitInfo.classList.add('armed');
   }
 }
@@ -244,15 +325,16 @@ els.btnSplit.addEventListener('click', () => {
     const n = state.sel.size;
     const newId = state.session.splitModel(state.currentModel, [...state.sel]);
     const newModel = state.session.models[newId];
+    state.exportSel.add(newModel.uid); // new models default to exported
     state.sel = new Set();
     state.anchor = null;
     renderModels(newId);
     renderDetail();
     renderExport();
-    toast(`Moved ${n.toLocaleString()} entr${n === 1 ? 'y' : 'ies'} to "${newModel.name}".`, true);
+    toast(tn('toast.moved', n, { name: newModel.name }), true);
   } catch (err) {
     console.error(err);
-    toast(err.message || 'Split failed.');
+    toast(errMsg(err, 'err.splitFail'));
   }
 });
 
@@ -260,32 +342,60 @@ els.btnSplit.addEventListener('click', () => {
 
 function renderExport() {
   const s = state.session;
-  const now = s.models.length;
+  const models = s.models;
+  // drop uids that no longer exist (e.g. after Reset created a new session)
+  state.exportSel = new Set([...state.exportSel].filter((uid) => models.some((m) => m.uid === uid)));
+
+  const now = models.length;
+  const nSel = state.exportSel.size;
+  const partial = nSel < now;
+
   els.exModels.innerHTML = s.changed
-    ? `${s.meta.modelsBefore}<span class="arrow">→</span>${now}`
-    : String(now);
-  els.exSplits.textContent = s.splitCount;
-  els.exSize.textContent = fmtBytes(s.serialize().length);
-  els.btnDownload.textContent = s.changed ? 'Download split .gia' : 'Download .gia (unchanged)';
+    ? `${num(s.meta.modelsBefore)}<span class="arrow">→</span>${num(now)}`
+    : num(now);
+  els.exSplits.textContent = num(s.splitCount);
+  els.exSelected.textContent = `${num(nSel)}/${num(now)}`;
+  els.exSelected.classList.toggle('partial', partial);
+
+  const totalEntries = models
+    .filter((m) => state.exportSel.has(m.uid))
+    .reduce((sum, m) => sum + m.count, 0);
+  els.exportCount.textContent = nSel === 0
+    ? t('models.nothing')
+    : t('models.exported', { sel: num(nSel), total: num(now), entries: num(totalEntries) });
+  els.exportCount.classList.toggle('warn', nSel === 0);
+
+  if (nSel === 0) {
+    els.exSize.textContent = '—';
+    els.btnDownload.disabled = true;
+    els.btnDownload.textContent = t('export.download');
+  } else {
+    els.exSize.textContent = fmtBytes(s.serialize([...state.exportSel]).length);
+    els.btnDownload.disabled = false;
+    els.btnDownload.textContent = s.changed || partial
+      ? t('export.downloadSplit')
+      : t('export.downloadUnchanged');
+  }
   els.btnReset.disabled = !s.changed;
 }
 
 els.btnReset.addEventListener('click', () => {
   if (!state.session?.changed) return;
   startSession(new GiaSession(state.sourceBytes));
-  toast('All splits discarded.', true);
+  toast(t('toast.discarded'), true);
 });
 
 els.btnDownload.addEventListener('click', () => {
-  if (!state.session) return;
-  const name = (els.setName.value.trim() || `${state.fileName} Split`).replace(/[\\/:*?"<>|]/g, '_');
-  const blob = new Blob([state.session.serialize()], { type: 'application/octet-stream' });
+  if (!state.session || state.exportSel.size === 0) return;
+  const fallback = t('export.defaultName', { base: state.fileName });
+  const name = (els.setName.value.trim() || fallback).replace(/[\\/:*?"<>|]/g, '_');
+  const blob = new Blob([state.session.serialize([...state.exportSel])], { type: 'application/octet-stream' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `${name}.gia`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  toast('File downloaded.', true);
+  toast(t('toast.downloaded'), true);
 });
 
 // ---------- misc ----------
@@ -305,9 +415,9 @@ function toast(msg, ok = false) {
 }
 
 function fmtBytes(n) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  if (n < 1024) return `${num(n)} ${t('unit.b')}`;
+  if (n < 1024 * 1024) return `${num(n / 1024, { maximumFractionDigits: 1 })} ${t('unit.kb')}`;
+  return `${num(n / 1024 / 1024, { maximumFractionDigits: 2 })} ${t('unit.mb')}`;
 }
 
 const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
