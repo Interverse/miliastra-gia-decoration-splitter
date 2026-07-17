@@ -498,6 +498,12 @@ els.btnMoveDown.addEventListener('click', () => moveSelection(1));
 
 function startInlineRename(el, current, onCommit) {
   if (el.querySelector('input')) return;
+  // freeze the host's box first, so swapping text for an input cannot
+  // reflow the table/list layout while editing
+  const rect = el.getBoundingClientRect();
+  el.style.width = `${rect.width}px`;
+  el.style.maxWidth = `${rect.width}px`;
+  el.style.height = `${rect.height}px`;
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'rename-input';
