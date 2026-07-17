@@ -438,5 +438,71 @@ for (const f of files) {
   }
 }
 
+// 11) 3D viewer point data + bulk rename with undo/redo
+{
+  // world positions: the legacy parser bakes positions as dec + modelPos*10
+  // (in 0.1 m units); the engine's points are meters, so point = baked / 10
+  // whenever zoom is the default 0.1 — cross-check on a model with a
+  // non-zero world position (White Square: model at ~(3.73, 0, -2.70))
+  {
+    const bytes = load('White Square.gia');
+    const s = new GiaSession(bytes);
+    const pts = s.decorationPoints(0);
+    const legacy = parseGia(bytes);
+    const close = (a, b) => Math.abs(a - b) < 1e-4;
+    check('viewer: one point per decoration', pts.length === 1 && pts[0].index === 0
+      && pts[0].guid === legacy.decorations[0].guid && pts[0].name === 'Decoration_1');
+    check('viewer: world position matches legacy parser baking',
+      close(pts[0].x, legacy.decorations[0].position.x / 10)
+      && close(pts[0].y, legacy.decorations[0].position.y / 10)
+      && close(pts[0].z, legacy.decorations[0].position.z / 10),
+      `(${pts[0].x.toFixed(3)}, ${pts[0].y.toFixed(3)}, ${pts[0].z.toFixed(3)})`);
+  }
+  {
+    const s = new GiaSession(load('Autumn Sword Auto Assemble.gia'));
+    const pts = s.decorationPoints(0);
+    check('viewer: sword model 0 has 999 finite points',
+      pts.length === 999 && pts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)));
+    // points survive splits: clone inherits the source transform
+    s.splitModel(0, [0, 1, 2]);
+    const clonePts = s.decorationPoints(1);
+    check('viewer: split clone keeps identical world positions',
+      clonePts.length === 3
+      && clonePts.every((p, i) => p.x === pts[i].x && p.y === pts[i].y && p.z === pts[i].z));
+  }
+
+  // bulk rename + undo/redo
+  {
+    const bytes = load('Autumn Sword Auto Assemble.gia');
+    const s = new GiaSession(bytes);
+    const op = s.renameDecorationsBulk(0, [0, 1, 2, 5], 'Blade Part');
+    check('bulk rename: applied to every selected decoration', op.changes.length === 4
+      && [0, 1, 2, 5].every((i) => s.decorations(0)[i].name === 'Blade Part')
+      && s.decorations(0)[3].name === 'Decoration_4'
+      && s.changed && s.renameCount === 1);
+    const renamedOut = s.serialize();
+    check('bulk rename: exported names applied',
+      parseGia(renamedOut).decorations.filter((d) => d.name === 'Blade Part').length === 4);
+
+    s.revertRename(op);
+    check('bulk rename: undo restores names and pristine state',
+      s.decorations(0)[0].name === 'Decoration_1' && !s.changed
+      && eq(s.serialize(), bytes));
+
+    s.replayRename(op);
+    check('bulk rename: redo reapplies identically',
+      s.decorations(0)[0].name === 'Blade Part' && eq(s.serialize(), renamedOut));
+
+    // stacking: rename over a rename, then unwind both
+    const op2 = s.renameDecorationsBulk(0, [0], 'Pommel');
+    check('bulk rename: stacked rename wins', s.decorations(0)[0].name === 'Pommel');
+    s.revertRename(op2);
+    check('bulk rename: undo of stacked rename restores prior rename',
+      s.decorations(0)[0].name === 'Blade Part');
+    s.revertRename(op);
+    check('bulk rename: full unwind is byte-identical', !s.changed && eq(s.serialize(), bytes));
+  }
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll tests passed.');
 process.exit(failures ? 1 : 0);

@@ -123,6 +123,20 @@ const encPacked = (nums) => {
   return Uint8Array.from(bytes);
 };
 
+// f32 vec3 message {1:x, 2:y, 3:z} — display-only helper for the 3D viewer;
+// the write path never re-encodes these values
+function readVec3F(b) {
+  const v = { x: 0, y: 0, z: 0 };
+  for (const it of parseMsg(b)) {
+    if (it.wire !== 5) continue;
+    const f = new DataView(it.val.buffer, it.val.byteOffset).getFloat32(0, true);
+    if (it.field === 1) v.x = f;
+    else if (it.field === 2) v.y = f;
+    else if (it.field === 3) v.z = f;
+  }
+  return v;
+}
+
 // identity message {2: classDomain, 4: guid}
 function parseIdentity(b) {
   const id = { classDomain: null, guid: null };
@@ -141,11 +155,13 @@ function rewriteIdentityGuid(b, guid) {
 
 // ---------- entry scanning ----------
 
-// model (object) entry: guid, name, canonical decoration list, other refs
+// model (object) entry: guid, name, canonical decoration list, other refs,
+// and (for the 3D viewer) the model's world position + zoom
 function summarizeModel(entryBody) {
-  const s = { guid: null, name: '', packed: null, refDecGuids: [], otherRefGuids: [] };
+  const s = { guid: null, name: '', packed: null, refDecGuids: [], otherRefGuids: [], pos: null, zoom: null, wrapper: 11 };
   const items = parseMsg(entryBody);
   const layout = modelLayout(items);
+  s.wrapper = layout.wrapper;
   for (const it of items) {
     if (it.wire !== 2) continue;
     if (it.field === 1) s.guid = parseIdentity(it.val).guid;
@@ -158,13 +174,26 @@ function summarizeModel(entryBody) {
       for (const p of parseMsg(it.val)) {
         if (p.field !== 1 || p.wire !== 2) continue;
         for (const c of parseMsg(p.val)) {
-          if (c.field !== layout.groupA || c.wire !== 2) continue;
-          const comp = parseMsg(c.val);
-          if (!comp.some((x) => x.field === 1 && x.wire === 0 && Number(x.val) === 40)) continue;
-          for (const body of comp) {
-            if (body.wire !== 2) continue;
+          if (c.wire !== 2) continue;
+          if (c.field === layout.groupA) {
+            const comp = parseMsg(c.val);
+            if (!comp.some((x) => x.field === 1 && x.wire === 0 && Number(x.val) === 40)) continue;
+            for (const body of comp) {
+              if (body.wire !== 2) continue;
+              for (const f of parseMsg(body.val)) {
+                if (f.field === 501 && f.wire === 2) s.packed = readPacked(f.val);
+              }
+            }
+          } else if (c.field === layout.groupB) {
+            const comp = parseMsg(c.val);
+            const type = comp.find((x) => x.field === 1 && x.wire === 0);
+            if (!type || Number(type.val) !== 1) continue;
+            const body = comp.find((x) => x.wire === 2);
+            if (!body) continue;
             for (const f of parseMsg(body.val)) {
-              if (f.field === 501 && f.wire === 2) s.packed = readPacked(f.val);
+              if (f.wire !== 2) continue;
+              if (f.field === 1) s.pos = readVec3F(f.val);
+              else if (f.field === 3) s.zoom = readVec3F(f.val);
             }
           }
         }
@@ -175,6 +204,30 @@ function summarizeModel(entryBody) {
   // to the entry's own decoration references if it is absent
   s.decGuids = s.packed ?? s.refDecGuids;
   return s;
+}
+
+// Decoration entry world-position parse (display-only, for the 3D viewer):
+// entry field 21 → 1 → component 5 type 1 → body 11 → field 1 vec3.
+function parseDecorationPosition(entryBody) {
+  for (const it of parseMsg(entryBody)) {
+    if (it.field !== 21 || it.wire !== 2) continue;
+    for (const p of parseMsg(it.val)) {
+      if (p.field !== 1 || p.wire !== 2) continue;
+      for (const c of parseMsg(p.val)) {
+        if (c.field !== 5 || c.wire !== 2) continue;
+        const comp = parseMsg(c.val);
+        const type = comp.find((x) => x.field === 1 && x.wire === 0);
+        if (!type || Number(type.val) !== 1) continue;
+        const body = comp.find((x) => x.wire === 2);
+        if (!body) continue;
+        for (const f of parseMsg(body.val)) {
+          if (f.field === 1 && f.wire === 2) return readVec3F(f.val);
+        }
+        return { x: 0, y: 0, z: 0 }; // transform present, position omitted
+      }
+    }
+  }
+  return { x: 0, y: 0, z: 0 };
 }
 
 // non-model entry: class number + guid + name
@@ -359,6 +412,7 @@ export class GiaSession {
     this._top = parseMsg(bytes.subarray(20, 20 + payloadLen));
 
     this._decNames = new Map(); // decoration guid -> entry name
+    this._decPos = new Map();   // decoration guid -> local position (viewer only)
     this._models = [];
     let exportTag = '', engineVersion = '';
     let decorationEntries = 0, otherEntries = 0;
@@ -371,6 +425,9 @@ export class GiaSession {
         const s = summarizeModel(it.val);
         bump(s.guid);
         for (const g of s.decGuids) bump(g);
+        // default zoom differs by layout: generated class-1 models use 0.1,
+        // class-3 game objects (e.g. Empty Model) use 1.0
+        const zd = s.wrapper === 11 ? 0.1 : 1;
         this._models.push({
           uid: this._models.length,
           srcTopIndex: idx,
@@ -381,6 +438,8 @@ export class GiaSession {
           guid: s.guid,
           name: s.name,
           decGuids: s.decGuids.slice(),
+          worldPos: s.pos ?? { x: 0, y: 0, z: 0 },
+          zoom: s.zoom ?? { x: zd, y: zd, z: zd },
           isNew: false,
         });
       } else if (it.field === 2) {
@@ -388,7 +447,10 @@ export class GiaSession {
         bump(e.guid);
         if (e.cls === 28) {
           decorationEntries++;
-          if (e.guid != null) this._decNames.set(e.guid, e.name);
+          if (e.guid != null) {
+            this._decNames.set(e.guid, e.name);
+            this._decPos.set(e.guid, parseDecorationPosition(it.val));
+          }
         } else {
           otherEntries++;
         }
@@ -436,6 +498,26 @@ export class GiaSession {
     }));
   }
 
+  // 3D-viewer view: one point per decoration, at its world position
+  // (model position + local position × model zoom). Read-only — never
+  // feeds back into serialization.
+  decorationPoints(modelId) {
+    const m = this._models[modelId];
+    if (!m) fail('Unknown model.', 'err.unknownModel');
+    const mp = m.worldPos, z = m.zoom;
+    return m.decGuids.map((guid, index) => {
+      const p = this._decPos.get(guid) ?? { x: 0, y: 0, z: 0 };
+      return {
+        index,
+        guid,
+        name: this._decNames.get(guid) ?? null,
+        x: mp.x + p.x * z.x,
+        y: mp.y + p.y * z.y,
+        z: mp.z + p.z * z.z,
+      };
+    });
+  }
+
   get changed() {
     return this.splitCount > 0 || this.reorderCount > 0
       || this.renameCount > 0 || this.moveCount > 0;
@@ -466,6 +548,55 @@ export class GiaSession {
     this._decRenames.add(guid);
     this.renameCount++;
     return true;
+  }
+
+  // Rename every decoration at `indices` to the same name in ONE operation
+  // (duplicate names are allowed by the format — no uniqueness enforcement).
+  // Returns an op token for revertRename/replayRename, enabling undo/redo.
+  renameDecorationsBulk(modelId, indices, name) {
+    const m = this._models[modelId];
+    if (!m) fail('Unknown model.', 'err.unknownModel');
+    name = String(name ?? '').trim();
+    if (!name) return null;
+    const picked = [...new Set(indices)].sort((a, b) => a - b);
+    if (picked.length === 0) return null;
+    if (picked[0] < 0 || picked[picked.length - 1] >= m.decGuids.length) {
+      fail('Selection is out of range.', 'err.range');
+    }
+    const changes = [];
+    for (const i of picked) {
+      const guid = m.decGuids[i];
+      changes.push({
+        guid,
+        prevName: this._decNames.get(guid) ?? null,
+        prevRenamed: this._decRenames.has(guid),
+      });
+      this._decNames.set(guid, name);
+      this._decRenames.add(guid);
+    }
+    this.renameCount++;
+    return { name, changes };
+  }
+
+  // Undo a renameDecorationsBulk operation: every affected decoration gets
+  // its previous name back, and entries that had never been renamed lose
+  // the rename flag again (so they serialize byte-identically).
+  revertRename(op) {
+    for (const c of op.changes) {
+      if (c.prevName == null) this._decNames.delete(c.guid);
+      else this._decNames.set(c.guid, c.prevName);
+      if (!c.prevRenamed) this._decRenames.delete(c.guid);
+    }
+    this.renameCount = Math.max(0, this.renameCount - 1);
+  }
+
+  // Redo a previously reverted rename operation.
+  replayRename(op) {
+    for (const c of op.changes) {
+      this._decNames.set(c.guid, op.name);
+      this._decRenames.add(c.guid);
+    }
+    this.renameCount++;
   }
 
   // Move the decorations at `indices` from one model to the END of another
@@ -528,6 +659,8 @@ export class GiaSession {
       guid: this._nextGuid++,
       name: this.previewSplitName(modelId),
       decGuids: moved,
+      worldPos: m.worldPos,
+      zoom: m.zoom,
       isNew: true,
     };
     m.decGuids = remaining;

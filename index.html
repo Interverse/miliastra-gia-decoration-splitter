@@ -7,6 +7,14 @@
   <meta name="description" content="Interactive .gia splitting utility: inspect each model's Decoration entries, select any subset, and move it into a new model. Runs entirely in your browser.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>✂️</text></svg>">
   <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="app">
@@ -69,6 +77,10 @@
               <button id="btn-select-none" class="btn tiny" data-i18n="detail.clear"></button>
               <button id="btn-move-up" class="btn tiny move" data-i18n-title="reorder.up" disabled>▲</button>
               <button id="btn-move-down" class="btn tiny move" data-i18n-title="reorder.down" disabled>▼</button>
+              <button id="btn-rename-sel" class="btn tiny" data-i18n="rename.selected" disabled></button>
+              <div id="rename-pop" class="rename-pop hidden">
+                <input type="text" id="rename-pop-input" spellcheck="false">
+              </div>
             </div>
           </div>
 
@@ -87,6 +99,44 @@
             <p class="hint table-hint" data-i18n="table.hint"></p>
             <p class="hint table-hint" data-i18n="reorder.hint"></p>
           </div>
+        </section>
+
+        <section id="viewer-panel">
+          <div id="viewer-toolbar">
+            <input type="search" id="v-search" data-i18n-placeholder="viewer.search" autocomplete="off">
+            <span id="v-stats" class="v-stats"></span>
+            <span id="v-coords" class="v-coords"></span>
+          </div>
+          <div id="viewer-tools">
+            <button id="v-frame-sel" class="btn tiny" data-i18n-title="viewer.frameSel">⊡</button>
+            <button id="v-frame-all" class="btn tiny" data-i18n-title="viewer.frameAll">⛶</button>
+            <button id="v-grid" class="btn tiny on" data-i18n-title="viewer.grid">▦</button>
+            <button id="v-axes" class="btn tiny on" data-i18n-title="viewer.axes">⚹</button>
+            <select id="v-labels" class="v-select" data-i18n-title="viewer.labels">
+              <option value="off" data-i18n="viewer.labelsOff"></option>
+              <option value="name" data-i18n="viewer.labelsName"></option>
+              <option value="index" data-i18n="viewer.labelsIndex"></option>
+            </select>
+            <input type="range" id="v-size" min="3" max="16" step="1" value="7" data-i18n-title="viewer.pointSize">
+            <input type="color" id="v-color-sel" value="#39d0d8" data-i18n-title="viewer.colorSel">
+            <input type="color" id="v-color-unsel" value="#7d879c" data-i18n-title="viewer.colorUnsel">
+            <button id="v-hide-sel" class="btn tiny" data-i18n="viewer.hideSel"></button>
+            <button id="v-hide-unsel" class="btn tiny" data-i18n="viewer.hideUnsel"></button>
+            <button id="v-isolate" class="btn tiny" data-i18n="viewer.isolate"></button>
+            <button id="v-show-all" class="btn tiny" data-i18n="viewer.showAll"></button>
+          </div>
+          <div id="v-viewport">
+            <div class="quickview">
+              <button class="btn tiny" data-view="home">⌂</button>
+              <button class="btn tiny" data-view="px">+X</button>
+              <button class="btn tiny" data-view="nx">−X</button>
+              <button class="btn tiny" data-view="py">+Y</button>
+              <button class="btn tiny" data-view="ny">−Y</button>
+              <button class="btn tiny" data-view="pz">+Z</button>
+              <button class="btn tiny" data-view="nz">−Z</button>
+            </div>
+          </div>
+          <p class="hint viewer-hint" data-i18n="viewer.hint"></p>
         </section>
 
       </div>

@@ -5,6 +5,7 @@
 // All user-facing text goes through js/i18n.js (t/tn/num + data-i18n).
 
 import { GiaSession, MAX_DECORATIONS_PER_MODEL } from './gia-splitter.js';
+import { DecorationViewer } from './viewer3d.js';
 import { t, tn, num, LANGS, currentLang, setLanguage, initI18n, onLangChange } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +27,11 @@ const els = {
   exportCount: $('export-count'),
   btnReset: $('btn-reset'), btnDownload: $('btn-download'), toast: $('toast'),
   langSelect: $('lang-select'),
+  btnRenameSel: $('btn-rename-sel'), renamePop: $('rename-pop'), renamePopInput: $('rename-pop-input'),
+  vViewport: $('v-viewport'), vSearch: $('v-search'), vStats: $('v-stats'), vCoords: $('v-coords'),
+  vFrameSel: $('v-frame-sel'), vFrameAll: $('v-frame-all'), vGrid: $('v-grid'), vAxes: $('v-axes'),
+  vLabels: $('v-labels'), vSize: $('v-size'), vColorSel: $('v-color-sel'), vColorUnsel: $('v-color-unsel'),
+  vHideSel: $('v-hide-sel'), vHideUnsel: $('v-hide-unsel'), vIsolate: $('v-isolate'), vShowAll: $('v-show-all'),
 };
 
 const state = {
@@ -36,7 +42,10 @@ const state = {
   sel: new Set(),     // selected row indices in the current model
   anchor: null,       // shift-selection anchor
   rows: [],           // <tr> per decoration index
-  exportSel: new Set() // uids of models included in the export
+  exportSel: new Set(), // uids of models included in the export
+  viewer: null,       // DecorationViewer (created on first session)
+  viewerModel: -1,    // model the viewer currently shows (for frame-on-switch)
+  history: { undo: [], redo: [] }, // rename operations
 };
 
 // ---------- language ----------
@@ -135,8 +144,11 @@ function startSession(session) {
   state.currentModel = 0;
   state.sel = new Set();
   state.anchor = null;
+  state.viewerModel = -1; // force a camera re-frame for the new project
+  state.history = { undo: [], redo: [] };
   // a new project starts with every model included in the export
   state.exportSel = new Set(session.models.map((m) => m.uid));
+  ensureViewer();
 
   renderMeta();
   els.setName.value = t('export.defaultName', { base: baseName() });
@@ -320,9 +332,8 @@ function renderDetail() {
     tdName.addEventListener('dblclick', (e) => {
       e.stopPropagation();
       startInlineRename(tdName, d.name ?? '', (v) => {
-        state.session.renameDecoration(state.currentModel, d.index, v);
-        renderDetail();
-        renderExport();
+        // routed through the bulk API so single renames are undoable too
+        commitRenameOp([d.index], v);
       });
     });
 
@@ -337,7 +348,26 @@ function renderDetail() {
     frag.appendChild(tr);
   }
   els.decBody.appendChild(frag);
+  updateViewerData();
   syncSelection();
+}
+
+// push the current model's points into the 3D viewer; the camera re-frames
+// only when the viewed model actually changed
+function updateViewerData() {
+  if (!state.viewer) return;
+  const frame = state.viewerModel !== state.currentModel;
+  state.viewerModel = state.currentModel;
+  state.viewer.setData(state.session.decorationPoints(state.currentModel), { frame });
+  applySearch();
+}
+
+function applySearch() {
+  if (!state.viewer) return;
+  const hits = state.viewer.setSearch(els.vSearch.value);
+  for (const tr of state.rows) {
+    tr.classList.toggle('search-hit', hits.has(Number(tr.dataset.index)));
+  }
 }
 
 function onRowClick(i, e) {
@@ -386,7 +416,12 @@ function syncSelection() {
   const n = state.sel.size;
   els.btnMoveUp.disabled = n === 0;
   els.btnMoveDown.disabled = n === 0;
+  els.btnRenameSel.disabled = n === 0;
   els.btnSplit.disabled = n === 0;
+  if (state.viewer) {
+    state.viewer.setSelection(state.sel);
+    updateViewerStats();
+  }
   els.btnSplit.textContent = n ? t('split.buttonN', { n: num(n) }) : t('split.button');
   if (n === 0) {
     els.splitInfo.textContent = t('split.none');
@@ -512,6 +547,126 @@ function moveSelection(delta) {
 
 els.btnMoveUp.addEventListener('click', () => moveSelection(-1));
 els.btnMoveDown.addEventListener('click', () => moveSelection(1));
+
+// ---------- 3D viewer ----------
+
+function ensureViewer() {
+  if (state.viewer) return;
+  state.viewer = new DecorationViewer(els.vViewport, {
+    onSelect: (indices, mode) => {
+      let next;
+      if (mode === 'replace') next = new Set(indices);
+      else {
+        next = new Set(state.sel);
+        if (mode === 'add') indices.forEach((i) => next.add(i));
+        else if (mode === 'subtract') indices.forEach((i) => next.delete(i));
+        else indices.forEach((i) => (next.has(i) ? next.delete(i) : next.add(i)));
+      }
+      state.sel = next;
+      state.anchor = indices.length ? indices[0] : null;
+      syncSelection();
+      if (indices.length === 1) {
+        state.rows[indices[0]]?.scrollIntoView({ block: 'nearest' });
+      }
+    },
+  });
+}
+
+function updateViewerStats() {
+  const total = state.rows.length;
+  const n = state.sel.size;
+  els.vStats.textContent = `${num(n)} / ${num(total)}`;
+  if (n === 0) {
+    els.vCoords.textContent = '';
+    return;
+  }
+  // coordinate readout: single point exact, multi-point centroid (raw .gia
+  // world coordinates, before the display mirror)
+  const pts = state.session.decorationPoints(state.currentModel);
+  let x = 0, y = 0, z = 0;
+  for (const i of state.sel) { x += pts[i].x; y += pts[i].y; z += pts[i].z; }
+  const f = (v) => num(v / n, { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+  els.vCoords.textContent = `(${f(x)}, ${f(y)}, ${f(z)})`;
+}
+
+els.vSearch.addEventListener('input', applySearch);
+els.vFrameSel.addEventListener('click', () => state.viewer?.frameSelected(state.sel));
+els.vFrameAll.addEventListener('click', () => state.viewer?.frameAll());
+els.vGrid.addEventListener('click', () => els.vGrid.classList.toggle('on', state.viewer?.toggleGrid()));
+els.vAxes.addEventListener('click', () => els.vAxes.classList.toggle('on', state.viewer?.toggleAxes()));
+els.vLabels.addEventListener('change', () => state.viewer?.setLabels(els.vLabels.value));
+els.vSize.addEventListener('input', () => state.viewer?.setPointSize(Number(els.vSize.value)));
+els.vColorSel.addEventListener('input', () => state.viewer?.setColors(els.vColorSel.value, null));
+els.vColorUnsel.addEventListener('input', () => state.viewer?.setColors(null, els.vColorUnsel.value));
+els.vHideSel.addEventListener('click', () => state.viewer?.hideSelected(state.sel));
+els.vHideUnsel.addEventListener('click', () => state.viewer?.hideUnselected(state.sel));
+els.vIsolate.addEventListener('click', () => state.viewer?.isolate(state.sel));
+els.vShowAll.addEventListener('click', () => state.viewer?.showAll());
+for (const btn of document.querySelectorAll('.quickview [data-view]')) {
+  btn.addEventListener('click', () => state.viewer?.quickView(btn.dataset.view));
+}
+
+// ---------- mass rename (undoable) ----------
+
+function commitRenameOp(indices, name) {
+  const op = state.session.renameDecorationsBulk(state.currentModel, indices, name);
+  if (!op) return;
+  state.history.undo.push(op);
+  state.history.redo = [];
+  renderDetail();
+  renderExport();
+  toast(tn('toast.renamed', op.changes.length), true);
+}
+
+els.btnRenameSel.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!state.sel.size) return;
+  els.renamePop.classList.remove('hidden');
+  els.renamePopInput.placeholder = t('rename.placeholder', { n: num(state.sel.size) });
+  els.renamePopInput.value = '';
+  els.renamePopInput.focus();
+});
+
+function closeRenamePop() { els.renamePop.classList.add('hidden'); }
+els.renamePopInput.addEventListener('keydown', (e) => {
+  e.stopPropagation();
+  if (e.key === 'Enter') {
+    const v = els.renamePopInput.value.trim();
+    closeRenamePop();
+    if (v) commitRenameOp([...state.sel], v);
+  } else if (e.key === 'Escape') {
+    closeRenamePop();
+  }
+});
+els.renamePop.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', closeRenamePop);
+
+document.addEventListener('keydown', (e) => {
+  if (!state.session) return;
+  const tag = e.target?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    const op = state.history.undo.pop();
+    if (!op) return;
+    state.session.revertRename(op);
+    state.history.redo.push(op);
+    renderDetail();
+    renderExport();
+    toast(t('toast.undone'), true);
+  } else if (k === 'y' || (k === 'z' && e.shiftKey)) {
+    e.preventDefault();
+    const op = state.history.redo.pop();
+    if (!op) return;
+    state.session.replayRename(op);
+    state.history.undo.push(op);
+    renderDetail();
+    renderExport();
+    toast(t('toast.redone'), true);
+  }
+});
 
 // ---------- inline renaming (double-click) ----------
 

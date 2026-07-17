@@ -37,7 +37,16 @@ top bar (no reload needed).
    the game's **999-entries-per-model limit** are rejected: over-limit targets
    dim immediately when the drag starts, turn red on hover, and dropping shows
    a warning while leaving both models unchanged.
-   **Rename** any model or decoration by double-clicking its name.
+   **Rename** any model or decoration by double-clicking its name, or select
+   multiple entries and use **Rename selected** to give them all the same name
+   in one undoable operation (Ctrl+Z / Ctrl+Y).
+   The **3D viewer** on the right shows every decoration of the open model as a
+   point at its world position: left-drag box-selects (Ctrl adds, Alt subtracts,
+   Shift toggles), right-drag orbits, middle-drag pans, and the selection stays
+   in sync with the table both ways. The toolbar offers search-with-highlight,
+   frame selected/all, grid/axis toggles, labels (names or indices), point
+   size/colors, hide/isolate controls, selection stats with a coordinate
+   readout, and quick-view buttons with an orientation gizmo.
 5. Choose which models the download includes using the sidebar checkboxes, with
    **Select all / Deselect all** at the top of the Models panel. Badges mark newly
    created models and node-graph owners. The selection persists until you change
@@ -72,6 +81,9 @@ surgery on the container and copies everything else verbatim:
 - The engine handles both observed model-entry layouts (generated class-1 models
   and class-3 game objects such as Empty Models), so files containing either kind
   load and split correctly.
+- The 3D viewer only READS decoration positions (transform component 5/1) for
+  display — nothing it does feeds back into serialization, so the
+  byte-preservation guarantees are unaffected.
 
 ## Localization
 
@@ -99,6 +111,7 @@ surgery on the container and copies everything else verbatim:
 | `index.html`, `css/style.css` | UI shell (master-detail: model list + Decoration table) |
 | `js/app.js` | app logic (import → select → split → download) |
 | `js/gia-splitter.js` | `GiaSession` — the byte-preserving split engine (self-contained, no dependencies) |
+| `js/viewer3d.js` | 3D decoration viewer (three.js points, box selection, camera tooling) |
 | `js/i18n.js`, `js/locales/*.js` | localization system + the 15 language dictionaries |
 | `tools/test-splitter.mjs` | verification suite (`node tools/test-splitter.mjs`) |
 | `tools/gia-parser.js` | legacy geometry-aware parser, used only as an independent cross-check in tests |
@@ -116,7 +129,7 @@ npx http-server -p 8123 .
 # then open http://localhost:8123
 ```
 
-No build step, no dependencies.
+No build step; the only dependency is three.js, loaded from the jsDelivr CDN via an import map (used solely by the 3D viewer).
 
 ## Tests
 
