@@ -74,4 +74,5 @@ export default {
   'err.selectModel': 'Wähle mindestens ein Modell für den Export aus.',
   'err.readFail': 'Datei konnte nicht gelesen werden.',
   'err.splitFail': 'Aufteilen fehlgeschlagen.',
+  "err.moveLimit": "Ein Modell kann höchstens {max} Dekorationseinträge enthalten — diese Verschiebung brächte „{name}“ auf {total}.",
 };

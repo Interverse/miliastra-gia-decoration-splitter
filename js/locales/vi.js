@@ -69,4 +69,5 @@ export default {
   'err.selectModel': 'Hãy chọn ít nhất một mô hình để xuất.',
   'err.readFail': 'Không đọc được tệp.',
   'err.splitFail': 'Tách thất bại.',
+  "err.moveLimit": "Mỗi mô hình chỉ chứa tối đa {max} mục trang trí — thao tác này sẽ khiến “{name}” có {total} mục.",
 };

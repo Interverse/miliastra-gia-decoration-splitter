@@ -4,7 +4,7 @@
 // All splitting is byte-preserving; see js/gia-splitter.js.
 // All user-facing text goes through js/i18n.js (t/tn/num + data-i18n).
 
-import { GiaSession } from './gia-splitter.js';
+import { GiaSession, MAX_DECORATIONS_PER_MODEL } from './gia-splitter.js';
 import { t, tn, num, LANGS, currentLang, setLanguage, initI18n, onLangChange } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
@@ -201,14 +201,16 @@ function renderModels(highlightId = null) {
       renameModelInline(name, m.id);
     });
 
-    // model rows accept decoration drags from the table (move between models)
+    // model rows accept decoration drags from the table (move between models);
+    // targets that would exceed the per-model limit show as invalid instead
     row.addEventListener('dragover', (e) => {
       if (!drag.indices || m.id === state.currentModel) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      row.classList.add('drop-target');
+      const overflow = m.count + drag.indices.length > MAX_DECORATIONS_PER_MODEL;
+      row.classList.add(overflow ? 'drop-invalid' : 'drop-target');
     });
-    row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+    row.addEventListener('dragleave', () => row.classList.remove('drop-target', 'drop-invalid'));
     row.addEventListener('drop', (e) => {
       if (!drag.indices || m.id === state.currentModel) return;
       e.preventDefault();
@@ -416,6 +418,20 @@ function onDragStart(i, e) {
   e.dataTransfer.effectAllowed = 'move';
   for (const idx of drag.indices) state.rows[idx]?.classList.add('dragging');
   els.modelList.classList.add('dec-drag'); // other models light up as drop targets
+  // immediately dim models that cannot accept this many entries
+  const models = state.session.models;
+  [...els.modelList.querySelectorAll('.model-row')].forEach((row, i) => {
+    const m = models[i];
+    if (m && m.id !== state.currentModel
+        && m.count + drag.indices.length > MAX_DECORATIONS_PER_MODEL) {
+      row.classList.add('drop-full');
+      row.title = t('err.moveLimit', {
+        max: MAX_DECORATIONS_PER_MODEL,
+        total: m.count + drag.indices.length,
+        name: m.name,
+      });
+    }
+  });
 }
 
 function onDragOver(i, tr, e) {
@@ -460,7 +476,10 @@ function endDrag() {
   drag.indices = null;
   drag.target = null;
   els.modelList.classList.remove('dec-drag');
-  for (const el of els.modelList.querySelectorAll('.drop-target')) el.classList.remove('drop-target');
+  for (const el of els.modelList.querySelectorAll('.drop-target, .drop-invalid, .drop-full')) {
+    el.classList.remove('drop-target', 'drop-invalid', 'drop-full');
+    el.removeAttribute('title');
+  }
 }
 
 function applyMove(indices, at) {

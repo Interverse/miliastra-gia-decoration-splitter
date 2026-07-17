@@ -411,6 +411,31 @@ for (const f of files) {
     check('move: reloaded output round-trips byte-identically',
       eq(new GiaSession(out).serialize(), out));
   }
+
+  // moves that would exceed the 999-per-model limit are rejected untouched
+  {
+    const s = new GiaSession(bytes);
+    // autumn_sword_2 holds 543; moving 500 more would make 1043 > 999
+    const srcBefore = s.decorations(0).map((d) => d.guid);
+    const dstBefore = s.decorations(1).map((d) => d.guid);
+    let err = null;
+    try {
+      s.moveDecorationsToModel(0, Array.from({ length: 500 }, (_, i) => i), 1);
+    } catch (e) { err = e; }
+    check('move limit: over-limit move rejected with err.moveLimit',
+      err?.i18n?.key === 'err.moveLimit'
+      && err.i18n.params.max === 999 && err.i18n.params.total === 1043
+      && err.i18n.params.name === 'autumn_sword_2');
+    check('move limit: both models unchanged after rejection',
+      eq(s.decorations(0).map((d) => d.guid), srcBefore)
+      && eq(s.decorations(1).map((d) => d.guid), dstBefore)
+      && s.moveCount === 0 && !s.changed
+      && eq(s.serialize(), bytes));
+    // landing exactly on the limit is allowed: 543 + 456 = 999
+    const res = s.moveDecorationsToModel(0, Array.from({ length: 456 }, (_, i) => i), 1);
+    check('move limit: filling to exactly 999 is allowed',
+      res.count === 456 && s.models[1].count === 999 && s.models[0].count === 543);
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll tests passed.');

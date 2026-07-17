@@ -74,6 +74,7 @@ export default {
   'err.selectModel': 'Sélectionnez au moins un modèle à exporter.',
   'err.readFail': 'Impossible de lire ce fichier.',
   'err.splitFail': 'Échec de la scission.',
+  "err.moveLimit": "Chaque modèle peut contenir au maximum {max} décorations — ce déplacement porterait « {name} » à {total}.",
 
   'unit.b': 'o',
   'unit.kb': 'Ko',

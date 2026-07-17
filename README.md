@@ -33,7 +33,10 @@ top bar (no reload needed).
    always shows the current order, and the exported .gia keeps exactly that order.
    Dragging rows onto another model in the sidebar **moves them into that model**
    (appended at the end, bytes preserved, only the parent reference rewritten);
-   valid targets light up while you drag.
+   valid targets light up while you drag. Moves that would push the target past
+   the game's **999-entries-per-model limit** are rejected: over-limit targets
+   dim immediately when the drag starts, turn red on hover, and dropping shows
+   a warning while leaving both models unchanged.
    **Rename** any model or decoration by double-clicking its name.
 5. Choose which models the download includes using the sidebar checkboxes, with
    **Select all / Deselect all** at the top of the Models panel. Badges mark newly

@@ -19,6 +19,9 @@
 //
 // If no split was performed, serialize() returns the original input bytes.
 
+// the game rejects models holding more than this many Decoration entries
+export const MAX_DECORATIONS_PER_MODEL = 999;
+
 const utf8 = new TextDecoder();
 const utf8enc = new TextEncoder();
 
@@ -476,6 +479,13 @@ export class GiaSession {
     if (picked.length === 0) return null;
     if (picked[0] < 0 || picked[picked.length - 1] >= src.decGuids.length) {
       fail('Selection is out of range.', 'err.range');
+    }
+    // reject (before touching anything) moves that would push the target
+    // past the game's per-model limit — both models stay unchanged
+    const total = dst.decGuids.length + picked.length;
+    if (total > MAX_DECORATIONS_PER_MODEL) {
+      fail(`Each model can hold at most ${MAX_DECORATIONS_PER_MODEL} Decoration entries — this move would give "${dst.name}" ${total}.`,
+        'err.moveLimit', { max: MAX_DECORATIONS_PER_MODEL, total, name: dst.name });
     }
     const set = new Set(picked);
     const moving = picked.map((i) => src.decGuids[i]);

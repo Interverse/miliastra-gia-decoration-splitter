@@ -69,4 +69,5 @@ export default {
   'err.selectModel': '내보낼 모델을 하나 이상 선택하세요.',
   'err.readFail': '파일을 읽지 못했습니다.',
   'err.splitFail': '분할에 실패했습니다.',
+  "err.moveLimit": "모델 하나에는 데코레이션 항목을 최대 {max}개까지 담을 수 있습니다. 이 이동을 하면 “{name}”이(가) {total}개가 됩니다.",
 };

@@ -69,4 +69,5 @@ export default {
   'err.selectModel': '請至少選擇一個要匯出的模型。',
   'err.readFail': '無法讀取該檔案。',
   'err.splitFail': '分割失敗。',
+  "err.moveLimit": "每個模型最多只能包含 {max} 個裝飾項目——此移動將使「{name}」達到 {total} 個。",
 };

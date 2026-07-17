@@ -69,4 +69,5 @@ export default {
   'err.selectModel': 'Pilih setidaknya satu model untuk diekspor.',
   'err.readFail': 'Gagal membaca file.',
   'err.splitFail': 'Pemisahan gagal.',
+  "err.moveLimit": "Setiap model hanya dapat memuat maksimal {max} entri dekorasi — pemindahan ini akan membuat “{name}” berisi {total}.",
 };

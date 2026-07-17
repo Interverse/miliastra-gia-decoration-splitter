@@ -77,6 +77,7 @@ export default {
   'err.selectModel': 'Select at least one model to export.',
   'err.readFail': 'Failed to read that file.',
   'err.splitFail': 'Split failed.',
+  "err.moveLimit": "Each model can hold at most {max} Decoration entries — this move would give “{name}” {total}.",
 
   'unit.b': 'B',
   'unit.kb': 'KB',

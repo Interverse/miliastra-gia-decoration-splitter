@@ -74,4 +74,5 @@ export default {
   'err.selectModel': 'Seleziona almeno un modello da esportare.',
   'err.readFail': 'Impossibile leggere il file.',
   'err.splitFail': 'Divisione non riuscita.',
+  "err.moveLimit": "Ogni modello può contenere al massimo {max} decorazioni — questo spostamento porterebbe “{name}” a {total}.",
 };

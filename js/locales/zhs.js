@@ -69,4 +69,5 @@ export default {
   'err.selectModel': '请至少选择一个要导出的模型。',
   'err.readFail': '无法读取该文件。',
   'err.splitFail': '拆分失败。',
+  "err.moveLimit": "每个模型最多只能包含 {max} 个装饰条目——此移动将使“{name}”达到 {total} 个。",
 };

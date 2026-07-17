@@ -69,4 +69,5 @@ export default {
   'err.selectModel': 'Dışa aktarmak için en az bir model seç.',
   'err.readFail': 'Dosya okunamadı.',
   'err.splitFail': 'Bölme başarısız oldu.',
+  "err.moveLimit": "Her model en fazla {max} dekorasyon kaydı içerebilir — bu taşıma “{name}” modelini {total} kayda çıkarır.",
 };

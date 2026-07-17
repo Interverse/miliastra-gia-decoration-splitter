@@ -69,4 +69,5 @@ export default {
   'err.selectModel': 'エクスポートするモデルを 1 つ以上選択してください。',
   'err.readFail': 'ファイルを読み込めませんでした。',
   'err.splitFail': '分割に失敗しました。',
+  "err.moveLimit": "1 つのモデルに保持できるデコレーション項目は最大 {max} 件です。この移動を行うと「{name}」は {total} 件になります。",
 };
