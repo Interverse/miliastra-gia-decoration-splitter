@@ -38,6 +38,11 @@ export default {
   'table.name': 'Nama',
   'table.id': 'ID',
   'table.hint': 'Klik untuk memilih baris · Ctrl+klik untuk mengubah · Shift+klik untuk rentang. Entri terpilih dipindahkan berurutan ke model baru di samping model ini.',
+  'reorder.up': 'Naikkan',
+  'reorder.down': 'Turunkan',
+  'reorder.dragTip': 'Seret untuk mengubah urutan',
+  'reorder.hint': 'Seret baris (atau gunakan tombol panah) untuk mengubah urutan dekorasi — file .gia yang diekspor mempertahankan urutan ini persis.',
+  "rename.tip": "Klik dua kali untuk mengganti nama",
 
   'export.models': 'model',
   'export.exported': 'diekspor',

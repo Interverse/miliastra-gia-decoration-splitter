@@ -42,6 +42,11 @@ export default {
   'table.name': 'Name',
   'table.id': 'ID',
   'table.hint': 'Klick wählt eine Zeile · Strg+Klick schaltet um · Umschalt+Klick wählt einen Bereich. Ausgewählte Einträge wandern in ihrer Reihenfolge in ein neues Modell neben diesem.',
+  'reorder.up': 'Nach oben',
+  'reorder.down': 'Nach unten',
+  'reorder.dragTip': 'Zum Umordnen ziehen',
+  'reorder.hint': 'Ziehe Zeilen (oder nutze die Pfeiltasten), um die Reihenfolge der Dekorationen zu ändern — die exportierte .gia übernimmt genau diese Reihenfolge.',
+  "rename.tip": "Zum Umbenennen doppelklicken",
 
   'export.models': 'Modelle',
   'export.exported': 'exportiert',

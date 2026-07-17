@@ -45,6 +45,11 @@ export default {
   'table.name': 'Name',
   'table.id': 'ID',
   'table.hint': 'Click to select a row · Ctrl+click to toggle · Shift+click to select a range. Selected entries move, in order, into a new model created next to this one.',
+  'reorder.up': 'Move up',
+  'reorder.down': 'Move down',
+  'reorder.dragTip': 'Drag to reorder',
+  'reorder.hint': 'Drag rows (or use the arrow buttons) to change the decoration order — the exported .gia keeps exactly this order.',
+  "rename.tip": "Double-click to rename",
 
   'export.models': 'models',
   'export.exported': 'exported',

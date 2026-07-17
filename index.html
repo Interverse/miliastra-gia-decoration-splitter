@@ -67,6 +67,8 @@
             <div class="detail-actions">
               <button id="btn-select-all" class="btn tiny" data-i18n="detail.selectAll"></button>
               <button id="btn-select-none" class="btn tiny" data-i18n="detail.clear"></button>
+              <button id="btn-move-up" class="btn tiny move" data-i18n-title="reorder.up" disabled>▲</button>
+              <button id="btn-move-down" class="btn tiny move" data-i18n-title="reorder.down" disabled>▼</button>
             </div>
           </div>
 
@@ -78,11 +80,12 @@
           <div id="dec-table-wrap">
             <table id="dec-table">
               <thead>
-                <tr><th class="col-check"></th><th class="num">#</th><th data-i18n="table.name"></th><th class="num" data-i18n="table.id"></th></tr>
+                <tr><th class="col-drag"></th><th class="col-check"></th><th class="num">#</th><th data-i18n="table.name"></th><th class="num" data-i18n="table.id"></th></tr>
               </thead>
               <tbody></tbody>
             </table>
             <p class="hint table-hint" data-i18n="table.hint"></p>
+            <p class="hint table-hint" data-i18n="reorder.hint"></p>
           </div>
         </section>
 

@@ -42,6 +42,11 @@ export default {
   'table.name': 'Nome',
   'table.id': 'ID',
   'table.hint': 'Clic per selezionare una riga · Ctrl+clic per alternare · Maiusc+clic per un intervallo. Le voci selezionate vengono spostate, in ordine, in un nuovo modello creato accanto a questo.',
+  'reorder.up': 'Sposta su',
+  'reorder.down': 'Sposta giù',
+  'reorder.dragTip': 'Trascina per riordinare',
+  'reorder.hint': 'Trascina le righe (o usa le frecce) per cambiare l’ordine delle decorazioni — il .gia esportato mantiene esattamente questo ordine.',
+  "rename.tip": "Doppio clic per rinominare",
 
   'export.models': 'modelli',
   'export.exported': 'esportati',

@@ -28,11 +28,22 @@ top bar (no reload needed).
    move into.
 4. Hit **Split selected**. The new model appears in the list right after its source;
    you can keep splitting any model, including newly created ones.
+   You can also **reorder** a model's Decoration entries: drag rows (dragging a
+   selected row moves the whole selection) or use the ▲/▼ buttons. The # column
+   always shows the current order, and the exported .gia keeps exactly that order.
+   Dragging rows onto another model in the sidebar **moves them into that model**
+   (appended at the end, bytes preserved, only the parent reference rewritten);
+   valid targets light up while you drag.
+   **Rename** any model or decoration by double-clicking its name.
 5. Choose which models the download includes using the sidebar checkboxes, with
    **Select all / Deselect all** at the top of the Models panel. Badges mark newly
    created models and node-graph owners. The selection persists until you change
    it, load another file, or Reset; newly created models are included by default.
-6. Download the resulting `.gia` (or *Reset* to discard all splits).
+6. Optionally change the **Base object** in the footer:
+   - **Generated model** (default) — the file is exported as-is.
+   - **Empty Model** — an in-game Empty Model object is inserted as the root/base
+     object; everything else is preserved under it unchanged.
+7. Download the resulting `.gia` (or *Reset* to discard all changes).
 
 ## How splitting works
 
@@ -47,14 +58,24 @@ surgery on the container and copies everything else verbatim:
   a `_2`/`_3`… name, plus only the moved decorations' references. A node-graph
   binding, which can belong to one model only, stays with the source model.
 - **Ordering**: each model's Decoration list (component 6/40 field 501) keeps its
-  entries in the original relative order after every split.
+  entries in the original relative order after every split. Manual reordering
+  rewrites only that list — every Decoration entry keeps its bytes, so all
+  metadata stays attached to the same decoration.
 - Entries the tool doesn't understand (node graphs, unknown classes, unknown fields
   at any level) are emitted exactly as they appeared in the source. A file exported
   without any splits is byte-identical to the input.
 - **Selective export**: deselected models are omitted together with their Decoration
-  entries; a node graph is dropped only when every model referencing it is excluded.
-  Every model and entry that stays in the export is emitted exactly as a full export
-  would emit it.
+  entries. Non-decoration entries (node graphs, unknown classes) are **always
+  preserved** — even when every model referencing them is excluded — so nothing
+  outside the Decoration lists is ever silently lost, and the tool stays
+  forward-compatible with entry types it doesn't recognize. Every model and entry
+  that stays in the export is emitted exactly as a full export would emit it.
+- **Empty Model base**: built from a byte template extracted from an in-game
+  reference export (`js/gia-templates.js`), not a synthesized structure — the test
+  suite reproduces the game's own Empty Model entry byte-for-byte from it. The
+  engine handles both observed model-entry layouts (generated class-1 models and
+  class-3 game objects such as Empty Models), so files containing either kind
+  split correctly.
 
 ## Localization
 
@@ -111,7 +132,10 @@ Verifies, against the sample fixtures: lossless protobuf re-encoding, byte-ident
 no-op serialization, order preservation for scattered selections, parent-reference
 correctness, byte-identity of node graphs and unmoved Decoration entries, repeated
 splits (including splitting a newly created model), selective export (omitted models
-and their entries, graph ownership, exporting only a new model), and edge cases such
+and their entries, unconditional preservation of non-decoration entries, exporting
+only a new model), reordering (order preservation, no-op detection, byte-identity of
+every decoration entry, reorder+split composition), byte-reproduction of the game's
+own Empty Model entry, the rename and cross-model move actions, and edge cases such
 as moving every entry out of a model.
 
 ## Deploy to GitHub Pages

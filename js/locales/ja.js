@@ -38,6 +38,11 @@ export default {
   'table.name': '名前',
   'table.id': 'ID',
   'table.hint': 'クリックで行を選択 · Ctrl+クリックで切り替え · Shift+クリックで範囲選択。選択した項目は順序を保ったまま、このモデルの隣に作成される新しいモデルへ移動します。',
+  'reorder.up': '上へ移動',
+  'reorder.down': '下へ移動',
+  'reorder.dragTip': 'ドラッグで並べ替え',
+  'reorder.hint': '行をドラッグ（または矢印ボタン）でデコレーションの順序を変更できます。書き出される .gia はこの順序をそのまま保持します。',
+  "rename.tip": "ダブルクリックで名前を変更",
 
   'export.models': 'モデル',
   'export.exported': 'エクスポート',

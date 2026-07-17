@@ -38,6 +38,11 @@ export default {
   'table.name': '名稱',
   'table.id': 'ID',
   'table.hint': '點擊選擇列 · Ctrl+點擊切換 · Shift+點擊選擇範圍。所選項目將依原順序移入緊鄰本模型的新模型。',
+  'reorder.up': '上移',
+  'reorder.down': '下移',
+  'reorder.dragTip': '拖曳以重新排序',
+  'reorder.hint': '拖曳列（或使用箭頭按鈕）調整裝飾順序——匯出的 .gia 將完全保持此順序。',
+  "rename.tip": "雙擊重新命名",
 
   'export.models': '模型',
   'export.exported': '已匯出',

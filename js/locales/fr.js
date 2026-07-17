@@ -42,6 +42,11 @@ export default {
   'table.name': 'Nom',
   'table.id': 'ID',
   'table.hint': 'Clic pour sélectionner une ligne · Ctrl+clic pour basculer · Maj+clic pour une plage. Les entrées sélectionnées sont déplacées, dans l’ordre, vers un nouveau modèle créé à côté de celui-ci.',
+  'reorder.up': 'Monter',
+  'reorder.down': 'Descendre',
+  'reorder.dragTip': 'Glisser pour réorganiser',
+  'reorder.hint': 'Faites glisser les lignes (ou utilisez les flèches) pour changer l’ordre des décorations — le .gia exporté conserve exactement cet ordre.',
+  "rename.tip": "Double-cliquez pour renommer",
 
   'export.models': 'modèles',
   'export.exported': 'exportés',

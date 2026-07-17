@@ -38,6 +38,11 @@ export default {
   'table.name': 'Tên',
   'table.id': 'ID',
   'table.hint': 'Nhấp để chọn hàng · Ctrl+nhấp để bật/tắt · Shift+nhấp để chọn dải. Các mục đã chọn sẽ chuyển theo đúng thứ tự sang mô hình mới nằm cạnh mô hình này.',
+  'reorder.up': 'Di chuyển lên',
+  'reorder.down': 'Di chuyển xuống',
+  'reorder.dragTip': 'Kéo để sắp xếp lại',
+  'reorder.hint': 'Kéo các hàng (hoặc dùng nút mũi tên) để thay đổi thứ tự trang trí — tệp .gia xuất ra giữ đúng thứ tự này.',
+  "rename.tip": "Nhấp đúp để đổi tên",
 
   'export.models': 'mô hình',
   'export.exported': 'đã xuất',

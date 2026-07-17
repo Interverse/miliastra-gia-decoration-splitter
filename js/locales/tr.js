@@ -38,6 +38,11 @@ export default {
   'table.name': 'Ad',
   'table.id': 'ID',
   'table.hint': 'Satır seçmek için tıkla · Ctrl+tık: değiştir · Shift+tık: aralık seç. Seçilen kayıtlar sırası korunarak bu modelin yanında oluşturulan yeni modele taşınır.',
+  'reorder.up': 'Yukarı taşı',
+  'reorder.down': 'Aşağı taşı',
+  'reorder.dragTip': 'Yeniden sıralamak için sürükle',
+  'reorder.hint': 'Sıralamayı değiştirmek için satırları sürükle (veya ok düğmelerini kullan) — dışa aktarılan .gia tam olarak bu sırayı korur.',
+  "rename.tip": "Yeniden adlandırmak için çift tıkla",
 
   'export.models': 'model',
   'export.exported': 'dışa aktarım',

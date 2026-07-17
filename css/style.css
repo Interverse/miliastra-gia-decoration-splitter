@@ -280,6 +280,9 @@ body.dragging::after {
 }
 .model-row:hover { background: rgba(255, 255, 255, 0.04); }
 .model-row.active { background: rgba(91, 140, 255, 0.13); border-color: rgba(91, 140, 255, 0.4); }
+/* while a decoration drag is active, other models advertise themselves as targets */
+#model-list.dec-drag .model-row:not(.active) { border-color: rgba(57, 208, 216, 0.35); border-style: dashed; }
+.model-row.drop-target { background: rgba(57, 208, 216, 0.18); border-color: var(--accent-2); border-style: solid; }
 .model-row.flash { animation: row-flash 1.2s ease-out; }
 @keyframes row-flash {
   0% { background: rgba(57, 208, 216, 0.35); }
@@ -362,7 +365,14 @@ body.dragging::after {
   font-weight: 700;
 }
 #dec-table th.num, #dec-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+#dec-table .col-drag { width: 26px; padding-right: 2px; }
 #dec-table .col-check { width: 30px; }
+.drag-handle { cursor: grab; color: var(--muted); font-size: 12px; opacity: 0.7; }
+#dec-table tbody tr:hover .drag-handle { opacity: 1; }
+#dec-table tbody tr.dragging { opacity: 0.4; }
+#dec-table tbody tr.drop-before td { border-top: 2px solid var(--accent-2); }
+#dec-table tbody tr.drop-after td { border-bottom: 2px solid var(--accent-2); }
+.detail-actions .move { padding: 5px 8px; font-size: 10px; }
 #dec-table input[type="checkbox"] { accent-color: var(--accent); margin: 0; cursor: pointer; display: block; }
 #dec-table tbody tr { cursor: pointer; user-select: none; }
 #dec-table tbody tr:hover { background: rgba(255, 255, 255, 0.035); }
@@ -373,6 +383,19 @@ body.dragging::after {
 #dec-table tbody tr.selected .dec-id { color: var(--text); }
 
 .table-hint { margin: 12px 2px 0; }
+
+/* ---------- inline rename ---------- */
+.rename-input {
+  width: 100%;
+  min-width: 60px;
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 2px 6px;
+  outline: none;
+}
 
 /* ---------- export bar ---------- */
 #export-bar {

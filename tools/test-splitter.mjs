@@ -236,11 +236,14 @@ for (const f of files) {
   }
   check('select: kept decoration entries byte-identical', keptIdentical);
 
-  // graph owned by an excluded model gets dropped with it
+  // non-decoration entries are always preserved, even when the only model
+  // referencing them is excluded from the export
   const graphOwner = s.models.find((m) => m.hasGraph);
   check('select: graph-owning model detected', !!graphOwner, graphOwner?.name);
   const noOwner = s.serialize(allUids.filter((u) => u !== graphOwner.uid));
-  check('select: graph dropped when its owner is excluded', rawView(noOwner).graphs.length === 0);
+  const gA = rawView(bytes).graphs, gB = rawView(noOwner).graphs;
+  check('select: graph preserved byte-identically even without its owner',
+    gB.length === gA.length && gA.every((g, i) => eq(g, gB[i])));
 
   // split + selection: export only the new model
   const s2 = new GiaSession(bytes);
@@ -261,6 +264,153 @@ for (const f of files) {
     withoutNew.objects.length === 3
     && withoutNew.objects.find((o) => o.name === 'autumn_sword_3').decorationGuids.length === 996
     && withoutNew.decorations.length === 2541 - 3);
+}
+
+// 8) reordering decorations
+{
+  const bytes = load('Autumn Sword Auto Assemble.gia');
+  const s = new GiaSession(bytes);
+  const before = s.decorations(0).map((d) => d.guid);
+
+  // move two scattered entries to the front
+  const res = s.moveDecorations(0, [10, 5], 0); // input order must not matter
+  const expect = [before[5], before[10], ...before.filter((_, i) => i !== 5 && i !== 10)];
+  check('reorder: block moved to front', res.changed && res.start === 0 && res.count === 2);
+  check('reorder: list order matches expectation', eq(s.decorations(0).map((d) => d.guid), expect));
+  check('reorder: session changed without any split', s.changed && s.splitCount === 0 && s.reorderCount === 1);
+
+  const out = s.serialize();
+  const dst = parseGia(out);
+  check('reorder: reparsed model list has the new order',
+    eq(dst.objects.find((o) => o.name === 'autumn_sword_3').decorationGuids, expect));
+  check('reorder: same-length file (only list order changed)', out.length === bytes.length);
+
+  // every decoration entry stays byte-identical — metadata attached by guid
+  const a = rawView(bytes), b = rawView(out);
+  let identical = a.decs.size === b.decs.size;
+  for (const [g, raw] of a.decs) { const o = b.decs.get(g); if (!o || !eq(raw, o)) identical = false; }
+  check('reorder: every decoration entry byte-identical', identical);
+  check('reorder: graphs + strings byte-identical',
+    a.graphs.every((g, i) => eq(g, b.graphs[i])) && a.strings.every((x, i) => eq(x, b.strings[i])));
+
+  // no-op move: same position → session stays pristine
+  const s2 = new GiaSession(bytes);
+  const r2 = s2.moveDecorations(0, [3], 3);
+  check('reorder: no-op move does not mark changed', r2.changed === false && !s2.changed && eq(s2.serialize(), bytes));
+
+  // move to the very end
+  const s3 = new GiaSession(bytes);
+  const first = s3.decorations(0).map((d) => d.guid);
+  s3.moveDecorations(0, [0], 9999); // target clamped to list end
+  check('reorder: move to end clamps and works',
+    eq(s3.decorations(0).map((d) => d.guid), [...first.slice(1), first[0]]));
+
+  // reorder + split compose: split picks from the CURRENT order
+  s.splitModel(0, [0, 1]); // the two entries we moved to the front
+  check('reorder+split: split respects current order',
+    eq(s.decorations(1).map((d) => d.guid), [before[5], before[10]]));
+  const dst2 = parseGia(s.serialize());
+  check('reorder+split: output parses with both effects', dst2.objects.length === 4
+    && eq(dst2.objects.find((o) => o.name === 'autumn_sword_3_2').decorationGuids, [before[5], before[10]]));
+}
+
+// 9) Empty Model base + object→decoration conversion
+{
+  const emptyRef = load('Empty Model.gia');
+  const asDec = load('Stone Elemental Cube As Decoration.gia');
+  const asObj = load('Stone Elemental Cube As Main Object Model.gia');
+
+  // the new reference files must round-trip like every other sample
+  for (const [n, b] of [['Empty Model', emptyRef], ['As Decoration', asDec], ['As Object', asObj]]) {
+    const s = new GiaSession(b);
+    check(`ref: ${n} no-op byte-identical`, eq(s.serialize(), b));
+  }
+
+  // class-3 layout understood: the Empty Model in "As Decoration" owns 1 entry
+  {
+    const s = new GiaSession(asDec);
+    check('ref: class-3 model list parsed', s.models.length === 1
+      && s.models[0].name === 'Empty Model' && s.models[0].count === 1);
+  }
+
+}
+
+// 10) renaming + moving decorations between models
+{
+  const bytes = load('Autumn Sword Auto Assemble.gia');
+
+  // rename a model
+  {
+    const s = new GiaSession(bytes);
+    check('rename: model rename returns true and marks changed',
+      s.renameModel(0, 'Blade Upper') === true && s.changed && s.renameCount === 1);
+    check('rename: same-name rename is a no-op', s.renameModel(0, 'Blade Upper') === false);
+    const dst = parseGia(s.serialize());
+    check('rename: exported model carries the new name',
+      dst.objects.some((o) => o.name === 'Blade Upper' && o.decorationGuids.length === 999)
+      && !dst.objects.some((o) => o.name === 'autumn_sword_3'));
+    // untouched models stay verbatim
+    const a = rawView(bytes), b = rawView(s.serialize());
+    let untouched = true;
+    for (const [g, raw] of a.decs) if (!eq(raw, b.decs.get(g))) untouched = false;
+    check('rename: every decoration entry byte-identical', untouched);
+  }
+
+  // rename a decoration
+  {
+    const s = new GiaSession(bytes);
+    const guid = s.decorations(0)[0].guid;
+    check('rename: decoration rename reflected in the view',
+      s.renameDecoration(0, 0, 'Pommel') === true && s.decorations(0)[0].name === 'Pommel');
+    const out = s.serialize();
+    const dst = parseGia(out);
+    check('rename: exported decoration carries the new name',
+      dst.decorations.find((d) => d.guid === guid)?.name === 'Pommel');
+    const a = rawView(bytes), b = rawView(out);
+    let othersOk = true;
+    for (const [g, raw] of a.decs) {
+      if (g === guid) { if (eq(raw, b.decs.get(g))) othersOk = false; }
+      else if (!eq(raw, b.decs.get(g))) othersOk = false;
+    }
+    check('rename: only the renamed entry differs', othersOk);
+  }
+
+  // move decorations between models
+  {
+    const s = new GiaSession(bytes);
+    const srcList = s.decorations(0).map((d) => d.guid);
+    const dstList = s.decorations(1).map((d) => d.guid);
+    const moving = [srcList[0], srcList[5]];
+    const res = s.moveDecorationsToModel(0, [5, 0], 1); // input order must not matter
+    check('move: counts updated', res.count === 2
+      && s.models[0].count === 997 && s.models[1].count === 545 && s.moveCount === 1);
+    check('move: appended to the target in order',
+      eq(s.decorations(1).map((d) => d.guid), [...dstList, ...moving]));
+    check('move: same-model move rejected as no-op', s.moveDecorationsToModel(0, [0], 0) === null);
+
+    const out = s.serialize();
+    const dst = parseGia(out);
+    const m0 = dst.objects.find((o) => o.name === 'autumn_sword_3');
+    const m1 = dst.objects.find((o) => o.name === 'autumn_sword_2');
+    check('move: reparsed lists match session state',
+      eq(m0.decorationGuids, s.decorations(0).map((d) => d.guid))
+      && eq(m1.decorationGuids, [...dstList, ...moving]));
+    let parentOk = true;
+    for (const g of moving) {
+      const d = dst.decorations.find((d) => d.guid === g);
+      if (!d || d.parentGuid !== m1.guid) parentOk = false;
+    }
+    check('move: moved entries reparented to the target model', parentOk);
+    const a = rawView(bytes), b = rawView(out);
+    let movedDiffer = true, unmovedSame = true;
+    for (const [g, raw] of a.decs) {
+      if (moving.includes(g)) { if (eq(raw, b.decs.get(g))) movedDiffer = false; }
+      else if (!eq(raw, b.decs.get(g))) unmovedSame = false;
+    }
+    check('move: moved entries differ only where expected', movedDiffer && unmovedSame);
+    check('move: reloaded output round-trips byte-identically',
+      eq(new GiaSession(out).serialize(), out));
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll tests passed.');

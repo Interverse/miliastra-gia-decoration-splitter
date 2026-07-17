@@ -22,6 +22,19 @@
 const utf8 = new TextDecoder();
 const utf8enc = new TextEncoder();
 
+// Model (object) entries come in two observed layouts:
+//   class 1 (generated models): prefab wrapper = entry field 11,
+//     component groups 6 (name/dec-list) and 7 (transform/collision/graph)
+//   class 3 (game objects, e.g. Empty Model): wrapper = entry field 12,
+//     component groups 5 and 6
+// Everything else (identity, refs, name, component shapes) matches.
+function modelLayout(items) {
+  const wrapper = items.some((it) => it.field === 12 && it.wire === 2) && !items.some((it) => it.field === 11 && it.wire === 2) ? 12 : 11;
+  return wrapper === 11
+    ? { wrapper: 11, groupA: 6, groupB: 7 }
+    : { wrapper: 12, groupA: 5, groupB: 6 };
+}
+
 // Errors carry an i18n code + params so the UI can localize them; the
 // message itself stays English for logs and tests.
 function fail(message, key, params) {
@@ -128,7 +141,9 @@ function rewriteIdentityGuid(b, guid) {
 // model (object) entry: guid, name, canonical decoration list, other refs
 function summarizeModel(entryBody) {
   const s = { guid: null, name: '', packed: null, refDecGuids: [], otherRefGuids: [] };
-  for (const it of parseMsg(entryBody)) {
+  const items = parseMsg(entryBody);
+  const layout = modelLayout(items);
+  for (const it of items) {
     if (it.wire !== 2) continue;
     if (it.field === 1) s.guid = parseIdentity(it.val).guid;
     else if (it.field === 2) {
@@ -136,11 +151,11 @@ function summarizeModel(entryBody) {
       if (id.classDomain === 1 && id.guid != null) s.refDecGuids.push(id.guid);
       else if (id.guid != null) s.otherRefGuids.push(id.guid); // e.g. node graphs
     } else if (it.field === 3) s.name = utf8.decode(it.val);
-    else if (it.field === 11) {
+    else if (it.field === layout.wrapper) {
       for (const p of parseMsg(it.val)) {
         if (p.field !== 1 || p.wire !== 2) continue;
         for (const c of parseMsg(p.val)) {
-          if (c.field !== 6 || c.wire !== 2) continue;
+          if (c.field !== layout.groupA || c.wire !== 2) continue;
           const comp = parseMsg(c.val);
           if (!comp.some((x) => x.field === 1 && x.wire === 0 && Number(x.val) === 40)) continue;
           for (const body of comp) {
@@ -153,8 +168,8 @@ function summarizeModel(entryBody) {
       }
     }
   }
-  // component 6/40's packed list is the canonical ordering; fall back to the
-  // entry's own decoration references if it is absent
+  // the dec-list component's packed list is the canonical ordering; fall back
+  // to the entry's own decoration references if it is absent
   s.decGuids = s.packed ?? s.refDecGuids;
   return s;
 }
@@ -180,8 +195,9 @@ function summarizeEntry(entryBody) {
 //   - component 6/40 field 501           → the list's guids
 //   - non-decoration references + component 7/3 graph binding → removed
 //     from new models (a node graph can belong to one model only)
-function rebuildModelEntry(entryBody, { chunk, allDecSet, isClone, guid, name }) {
+function rebuildModelEntry(entryBody, { chunk, allDecSet, isClone, rename = false, guid, name }) {
   const items = parseMsg(entryBody);
+  const layout = modelLayout(items);
 
   const refByGuid = new Map();
   for (const it of items) {
@@ -190,29 +206,41 @@ function rebuildModelEntry(entryBody, { chunk, allDecSet, isClone, guid, name })
     if (id.classDomain === 1 && id.guid != null) refByGuid.set(id.guid, it);
   }
 
+  // decorations received from another model have no ref bytes in this
+  // entry — synthesize the standard {2:1, 3:14, 4:guid} reference
+  const refFor = (g) => refByGuid.get(g) ?? { field: 2, wire: 2, val: encodeMsg([
+    { field: 2, wire: 0, val: 1n },
+    { field: 3, wire: 0, val: 14n },
+    { field: 4, wire: 0, val: BigInt(g) },
+  ]) };
+  const hasDecRefs = [...refByGuid.keys()].some((g) => allDecSet.has(g));
+
   const out = [];
   let refsEmitted = false;
   for (const it of items) {
     if (it.field === 1 && it.wire === 2) {
       out.push(isClone ? { field: 1, wire: 2, val: rewriteIdentityGuid(it.val, guid) } : it);
+      // an entry with no decoration refs of its own gets the block here,
+      // right after the identity (the reference files' ref position)
+      if (!hasDecRefs && chunk.length) {
+        refsEmitted = true;
+        for (const g of chunk) out.push(refFor(g));
+      }
     } else if (it.field === 2 && it.wire === 2) {
       const id = parseIdentity(it.val);
       if (id.classDomain === 1 && allDecSet.has(id.guid)) {
         if (!refsEmitted) {
           refsEmitted = true;
-          for (const g of chunk) {
-            const ref = refByGuid.get(g);
-            if (ref) out.push(ref);
-          }
+          for (const g of chunk) out.push(refFor(g));
         }
         // original ref replaced by the list block above
       } else if (!isClone) {
         out.push(it); // graph/unknown references stay with the source model
       }
-    } else if (it.field === 3 && it.wire === 2 && isClone) {
+    } else if (it.field === 3 && it.wire === 2 && (isClone || rename)) {
       out.push({ field: 3, wire: 2, val: utf8enc.encode(name) });
-    } else if (it.field === 11 && it.wire === 2) {
-      out.push({ field: 11, wire: 2, val: rebuildPrefabWrap(it.val, { chunk, isClone, guid, name }) });
+    } else if (it.field === layout.wrapper && it.wire === 2) {
+      out.push({ field: layout.wrapper, wire: 2, val: rebuildPrefabWrap(it.val, { chunk, isClone, rename, guid, name, layout }) });
     } else {
       out.push(it);
     }
@@ -227,38 +255,41 @@ function rebuildPrefabWrap(wrapBody, ctx) {
       : it));
 }
 
-function rebuildPrefabBody(prefabBody, { chunk, isClone, guid, name }) {
+function rebuildPrefabBody(prefabBody, { chunk, isClone, rename = false, guid, name, layout }) {
   const out = [];
   for (const it of parseMsg(prefabBody)) {
     if (it.field === 1 && it.wire === 0 && isClone) {
       out.push({ field: 1, wire: 0, val: BigInt(guid) });
-    } else if (it.field === 6 && it.wire === 2) {
+    } else if (it.field === layout.groupA && it.wire === 2) {
       const comp = parseMsg(it.val);
       const type = comp.find((x) => x.field === 1 && x.wire === 0);
       const t = type ? Number(type.val) : null;
       if (t === 40) {
-        // decoration guid list → this model's list
+        // decoration guid list → this model's list (field added if absent,
+        // e.g. an Empty Model whose template list component is empty)
         const rebuilt = comp.map((x) => x.wire === 2
-          ? { ...x, val: encodeMsg(parseMsg(x.val).map((f) =>
-              f.field === 501 && f.wire === 2 ? { field: 501, wire: 2, val: encPacked(chunk) } : f)) }
+          ? { ...x, val: encodeMsg([
+              ...parseMsg(x.val).filter((f) => !(f.field === 501 && f.wire === 2)),
+              ...(chunk.length ? [{ field: 501, wire: 2, val: encPacked(chunk) }] : []),
+            ]) }
           : x);
-        out.push({ field: 6, wire: 2, val: encodeMsg(rebuilt) });
-      } else if (t === 1 && isClone) {
-        // prefab name component → new model's name (other subfields kept)
+        out.push({ field: layout.groupA, wire: 2, val: encodeMsg(rebuilt) });
+      } else if (t === 1 && (isClone || rename)) {
+        // prefab name component → the model's (new) name (other subfields kept)
         const rebuilt = comp.map((x) => x.wire === 2
           ? { ...x, val: encodeMsg(parseMsg(x.val).map((f) =>
               f.field === 1 && f.wire === 2 ? { field: 1, wire: 2, val: utf8enc.encode(name) } : f)) }
           : x);
-        out.push({ field: 6, wire: 2, val: encodeMsg(rebuilt) });
+        out.push({ field: layout.groupA, wire: 2, val: encodeMsg(rebuilt) });
       } else {
         out.push(it);
       }
-    } else if (it.field === 7 && it.wire === 2 && isClone) {
+    } else if (it.field === layout.groupB && it.wire === 2 && isClone) {
       const comp = parseMsg(it.val);
       const type = comp.find((x) => x.field === 1 && x.wire === 0);
       if (type && Number(type.val) === 3) {
         // node-graph binding: new models must not re-attach the source's graph
-        out.push({ field: 7, wire: 2, val: encodeMsg(comp.map((x) => x.wire === 2 ? { ...x, val: new Uint8Array(0) } : x)) });
+        out.push({ field: layout.groupB, wire: 2, val: encodeMsg(comp.map((x) => x.wire === 2 ? { ...x, val: new Uint8Array(0) } : x)) });
       } else {
         out.push(it);
       }
@@ -270,17 +301,31 @@ function rebuildPrefabBody(prefabBody, { chunk, isClone, guid, name }) {
 }
 
 // Rewrite a Decoration entry's parent-model reference (component 4/40 field
-// 502). Every other byte of the entry is preserved.
-function rebuildDecorationParent(entryBody, newParent) {
+// 502) and/or its name (entry field 3 + component 4/1). Every other byte of
+// the entry is preserved.
+function rebuildDecorationEntry(entryBody, { parent = null, name = null }) {
   const mapComponent4 = (compBytes) => {
     const comp = parseMsg(compBytes);
-    if (!comp.some((x) => x.field === 1 && x.wire === 0 && Number(x.val) === 40)) return compBytes;
-    return encodeMsg(comp.map((x) => x.wire === 2
-      ? { ...x, val: encodeMsg(parseMsg(x.val).map((f) =>
-          f.field === 502 && f.wire === 0 ? { field: 502, wire: 0, val: BigInt(newParent) } : f)) }
-      : x));
+    const type = comp.find((x) => x.field === 1 && x.wire === 0);
+    const t = type ? Number(type.val) : null;
+    if (t === 40 && parent != null) {
+      return encodeMsg(comp.map((x) => x.wire === 2
+        ? { ...x, val: encodeMsg(parseMsg(x.val).map((f) =>
+            f.field === 502 && f.wire === 0 ? { field: 502, wire: 0, val: BigInt(parent) } : f)) }
+        : x));
+    }
+    if (t === 1 && name != null) {
+      return encodeMsg(comp.map((x) => x.wire === 2
+        ? { ...x, val: encodeMsg(parseMsg(x.val).map((f) =>
+            f.field === 1 && f.wire === 2 ? { field: 1, wire: 2, val: utf8enc.encode(name) } : f)) }
+        : x));
+    }
+    return compBytes;
   };
   return encodeMsg(parseMsg(entryBody).map((it) => {
+    if (it.field === 3 && it.wire === 2 && name != null) {
+      return { field: 3, wire: 2, val: utf8enc.encode(name) };
+    }
     if (it.field !== 21 || it.wire !== 2) return it;
     return { field: 21, wire: 2, val: encodeMsg(parseMsg(it.val).map((p) => {
       if (p.field !== 1 || p.wire !== 2) return p;
@@ -350,7 +395,11 @@ export class GiaSession {
 
     this._nextGuid = maxGuid + 1;
     this._nextUid = this._models.length;
+    this._decRenames = new Set(); // decoration guids whose entry needs a new name
     this.splitCount = 0;
+    this.reorderCount = 0;
+    this.renameCount = 0;
+    this.moveCount = 0;
     this.meta = {
       exportName: (exportTag.match(/\\(.+)\.gia$/) || [])[1] ?? '',
       engineVersion,
@@ -384,7 +433,57 @@ export class GiaSession {
     }));
   }
 
-  get changed() { return this.splitCount > 0; }
+  get changed() {
+    return this.splitCount > 0 || this.reorderCount > 0
+      || this.renameCount > 0 || this.moveCount > 0;
+  }
+
+  // Rename a model. The new name is patched into the entry (field 3 +
+  // the prefab name component) at serialize time.
+  renameModel(modelId, name) {
+    const m = this._models[modelId];
+    if (!m) fail('Unknown model.', 'err.unknownModel');
+    name = String(name ?? '').trim();
+    if (!name || name === m.name) return false;
+    m.name = name;
+    if (!m.isNew) m.renamed = true; // new models always carry their name
+    this.renameCount++;
+    return true;
+  }
+
+  // Rename one decoration (by its position in the model's current list).
+  renameDecoration(modelId, index, name) {
+    const m = this._models[modelId];
+    if (!m) fail('Unknown model.', 'err.unknownModel');
+    if (index < 0 || index >= m.decGuids.length) fail('Selection is out of range.', 'err.range');
+    name = String(name ?? '').trim();
+    const guid = m.decGuids[index];
+    if (!name || name === (this._decNames.get(guid) ?? '')) return false;
+    this._decNames.set(guid, name);
+    this._decRenames.add(guid);
+    this.renameCount++;
+    return true;
+  }
+
+  // Move the decorations at `indices` from one model to the END of another
+  // model's list. Entries keep their bytes; only the parent reference is
+  // rewritten at serialize time.
+  moveDecorationsToModel(fromId, indices, toId) {
+    const src = this._models[fromId], dst = this._models[toId];
+    if (!src || !dst) fail('Unknown model.', 'err.unknownModel');
+    if (fromId === toId) return null;
+    const picked = [...new Set(indices)].sort((a, b) => a - b);
+    if (picked.length === 0) return null;
+    if (picked[0] < 0 || picked[picked.length - 1] >= src.decGuids.length) {
+      fail('Selection is out of range.', 'err.range');
+    }
+    const set = new Set(picked);
+    const moving = picked.map((i) => src.decGuids[i]);
+    src.decGuids = src.decGuids.filter((_, i) => !set.has(i));
+    dst.decGuids = [...dst.decGuids, ...moving];
+    this.moveCount++;
+    return { count: moving.length, targetName: dst.name };
+  }
 
   // Name the next split of this model would produce.
   previewSplitName(modelId) {
@@ -432,6 +531,34 @@ export class GiaSession {
   // their Decoration entries and any entries (e.g. node graphs) referenced
   // only by omitted models. Everything kept is preserved exactly as the
   // full export would emit it. Omit the argument to export every model.
+  // Move the decorations at `indices` (current positions) so they sit, in
+  // their current relative order, starting at `targetIndex` — expressed in
+  // the list as it stands AFTER the moved entries are lifted out. Only the
+  // model's ordering changes; every Decoration entry keeps its bytes, so
+  // all metadata stays attached to the same decoration. Returns the moved
+  // block's new {start, count, changed}; a move that lands the list in the
+  // same order does not mark the session changed.
+  moveDecorations(modelId, indices, targetIndex) {
+    const m = this._models[modelId];
+    if (!m) fail('Unknown model.', 'err.unknownModel');
+    const picked = [...new Set(indices)].sort((a, b) => a - b);
+    if (picked.length === 0) return null;
+    if (picked[0] < 0 || picked[picked.length - 1] >= m.decGuids.length) {
+      fail('Selection is out of range.', 'err.range');
+    }
+    const set = new Set(picked);
+    const moving = picked.map((i) => m.decGuids[i]);
+    const rest = m.decGuids.filter((_, i) => !set.has(i));
+    const at = Math.max(0, Math.min(Math.floor(targetIndex), rest.length));
+    const next = [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+    if (next.every((g, i) => g === m.decGuids[i])) {
+      return { start: at, count: moving.length, changed: false };
+    }
+    m.decGuids = next;
+    this.reorderCount++;
+    return { start: at, count: moving.length, changed: true };
+  }
+
   serialize(selectedUids = null) {
     const sel = selectedUids == null ? null : new Set(selectedUids);
     const included = (m) => sel === null || sel.has(m.uid);
@@ -448,38 +575,33 @@ export class GiaSession {
       groups.get(m.srcTopIndex).push(m);
     }
 
-    // decorations owned by a new model get their parent reference rewritten;
-    // decorations owned by an excluded model are dropped from the export
+    // a decoration's parent reference is rewritten whenever its current
+    // owner differs from the model that owned it in the source file (splits,
+    // cross-model moves); decorations owned by an excluded model are dropped
+    const origOwner = new Map();
+    for (const m of this._models) {
+      if (m.isNew || !m.srcDecGuids) continue;
+      for (const g of m.srcDecGuids) origOwner.set(g, m.guid);
+    }
     const reparent = new Map();
     const dropDec = new Set();
     for (const m of this._models) {
       if (!included(m)) {
         for (const g of m.decGuids) dropDec.add(g);
-      } else if (m.isNew) {
-        for (const g of m.decGuids) reparent.set(g, m.guid);
+        continue;
+      }
+      for (const g of m.decGuids) {
+        if (origOwner.get(g) !== m.guid) reparent.set(g, m.guid);
       }
     }
-
-    // non-decoration entries (e.g. node graphs) are dropped only when every
-    // model referencing them is excluded; unreferenced entries always stay
-    const otherRefOwners = new Map(); // entry guid -> [model, ...]
-    for (const m of this._models) {
-      for (const g of m.otherRefGuids) {
-        if (!otherRefOwners.has(g)) otherRefOwners.set(g, []);
-        otherRefOwners.get(g).push(m);
-      }
-    }
-    const keepOther = (guid) => {
-      const owners = otherRefOwners.get(guid);
-      return !owners || owners.some(included);
-    };
 
     const out = [];
     this._top.forEach((it, idx) => {
       if (it.field === 1 && it.wire === 2 && groups.has(idx)) {
         for (const m of groups.get(idx)) {
           if (!included(m)) continue;
-          if (!m.isNew && m.srcDecGuids && m.decGuids.length === m.srcDecGuids.length
+          if (!m.isNew && !m.renamed && m.srcDecGuids
+              && m.decGuids.length === m.srcDecGuids.length
               && m.decGuids.every((g, i) => g === m.srcDecGuids[i])) {
             out.push(it); // never touched → verbatim
           } else {
@@ -487,6 +609,7 @@ export class GiaSession {
               chunk: m.decGuids,
               allDecSet: m.srcAllDecSet,
               isClone: m.isNew,
+              rename: !!m.renamed,
               guid: m.guid,
               name: m.name,
             }) });
@@ -496,12 +619,17 @@ export class GiaSession {
         const e = summarizeEntry(it.val);
         if (e.cls === 28) {
           if (dropDec.has(e.guid)) return;
-          if (reparent.has(e.guid)) {
-            out.push({ field: 2, wire: 2, val: rebuildDecorationParent(it.val, reparent.get(e.guid)) });
+          const parent = reparent.get(e.guid) ?? null;
+          const name = this._decRenames.has(e.guid) ? this._decNames.get(e.guid) : null;
+          if (parent != null || name != null) {
+            out.push({ field: 2, wire: 2, val: rebuildDecorationEntry(it.val, { parent, name }) });
           } else {
             out.push(it);
           }
-        } else if (keepOther(e.guid)) {
+        } else {
+          // non-decoration entries (node graphs, unknown classes) are ALWAYS
+          // preserved — even when every model referencing them is excluded —
+          // so nothing outside the Decoration lists is ever silently lost
           out.push(it);
         }
       } else {
@@ -524,6 +652,7 @@ export class GiaSession {
   }
 }
 
-// used by tests: parseMsg → encodeMsg must be lossless
+// used by tests: parseMsg → encodeMsg must be lossless; the builders are
+// exposed so tests can reproduce the game's reference files byte-for-byte
 export const _internal = { parseMsg, encodeMsg };
 export default { GiaSession };

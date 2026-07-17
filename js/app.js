@@ -16,6 +16,8 @@ const els = {
   modelCount: $('model-count'), modelList: $('model-list'),
   detailName: $('detail-name'), detailCount: $('detail-count'),
   btnSelectAll: $('btn-select-all'), btnSelectNone: $('btn-select-none'),
+  btnMoveUp: $('btn-move-up'), btnMoveDown: $('btn-move-down'),
+  tableWrap: $('dec-table-wrap'),
   splitInfo: $('split-info'), btnSplit: $('btn-split'),
   decBody: $('dec-table').querySelector('tbody'),
   exportBar: $('export-bar'), exModels: $('ex-models'), exSelected: $('ex-selected'),
@@ -88,11 +90,26 @@ els.fileInput.addEventListener('change', () => {
   els.fileInput.value = '';
 });
 
+// The file-import overlay reacts ONLY to external file drags. Internal UI
+// drags (decoration reordering) carry 'text/plain', not 'Files', and are
+// additionally flagged via drag.indices — they never touch the overlay.
+const isFileDrag = (e) =>
+  !drag.indices && [...(e.dataTransfer?.types ?? [])].includes('Files');
+
 let dragDepth = 0;
-document.addEventListener('dragenter', (e) => { e.preventDefault(); if (++dragDepth === 1) document.body.classList.add('dragging'); });
-document.addEventListener('dragleave', (e) => { e.preventDefault(); if (--dragDepth === 0) document.body.classList.remove('dragging'); });
-document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('dragenter', (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  if (++dragDepth === 1) document.body.classList.add('dragging');
+});
+document.addEventListener('dragleave', (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  if (--dragDepth === 0) document.body.classList.remove('dragging');
+});
+document.addEventListener('dragover', (e) => { if (isFileDrag(e)) e.preventDefault(); });
 document.addEventListener('drop', (e) => {
+  if (!isFileDrag(e)) return;
   e.preventDefault();
   dragDepth = 0;
   document.body.classList.remove('dragging');
@@ -178,7 +195,30 @@ function renderModels(highlightId = null) {
     const name = document.createElement('span');
     name.className = 'model-name';
     name.textContent = m.name || t('model.unnamed');
-    name.title = m.name;
+    name.title = `${m.name} — ${t('rename.tip')}`;
+    name.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      renameModelInline(name, m.id);
+    });
+
+    // model rows accept decoration drags from the table (move between models)
+    row.addEventListener('dragover', (e) => {
+      if (!drag.indices || m.id === state.currentModel) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      row.classList.add('drop-target');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+    row.addEventListener('drop', (e) => {
+      if (!drag.indices || m.id === state.currentModel) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const indices = drag.indices;
+      endDrag();
+      drag.indices = indices; // moveSelectionToModel reads them
+      moveSelectionToModel(m.id);
+      drag.indices = null;
+    });
 
     const badges = document.createElement('span');
     badges.className = 'model-badges';
@@ -234,6 +274,8 @@ function renderDetail() {
   const decs = state.session.decorations(state.currentModel);
 
   els.detailName.textContent = model.name || t('model.unnamed');
+  els.detailName.title = t('rename.tip');
+  els.detailName.ondblclick = () => renameModelInline(els.detailName, state.currentModel);
   els.detailCount.textContent = tn('detail.entries', decs.length);
 
   els.decBody.textContent = '';
@@ -242,6 +284,19 @@ function renderDetail() {
   for (const d of decs) {
     const tr = document.createElement('tr');
     tr.dataset.index = d.index;
+    tr.draggable = true;
+    tr.addEventListener('dragstart', (e) => onDragStart(d.index, e));
+    tr.addEventListener('dragover', (e) => onDragOver(d.index, tr, e));
+    tr.addEventListener('drop', (e) => onDrop(e));
+    tr.addEventListener('dragend', endDrag);
+
+    const tdDrag = document.createElement('td');
+    tdDrag.className = 'col-drag';
+    const handle = document.createElement('span');
+    handle.className = 'drag-handle';
+    handle.textContent = '⠿';
+    handle.title = t('reorder.dragTip');
+    tdDrag.appendChild(handle);
 
     const tdCheck = document.createElement('td');
     tdCheck.className = 'col-check';
@@ -259,13 +314,22 @@ function renderDetail() {
     tdName.className = 'dec-name';
     if (d.name) tdName.textContent = d.name;
     else { tdName.textContent = '—'; tdName.classList.add('muted'); }
+    tdName.title = t('rename.tip');
+    tdName.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      startInlineRename(tdName, d.name ?? '', (v) => {
+        state.session.renameDecoration(state.currentModel, d.index, v);
+        renderDetail();
+        renderExport();
+      });
+    });
 
     const tdId = document.createElement('td');
     tdId.className = 'num dec-id';
     if (d.guid != null) tdId.textContent = d.guid; // identifier — no grouping
     else { tdId.textContent = '—'; tdId.classList.add('muted'); }
 
-    tr.append(tdCheck, tdIdx, tdName, tdId);
+    tr.append(tdDrag, tdCheck, tdIdx, tdName, tdId);
     tr.addEventListener('click', (e) => onRowClick(d.index, e));
     state.rows.push(tr);
     frag.appendChild(tr);
@@ -318,6 +382,8 @@ function syncSelection() {
     tr.querySelector('input').checked = sel;
   }
   const n = state.sel.size;
+  els.btnMoveUp.disabled = n === 0;
+  els.btnMoveDown.disabled = n === 0;
   els.btnSplit.disabled = n === 0;
   els.btnSplit.textContent = n ? t('split.buttonN', { n: num(n) }) : t('split.button');
   if (n === 0) {
@@ -331,6 +397,157 @@ function syncSelection() {
       name: escapeHtml(target),
     });
     els.splitInfo.classList.add('armed');
+  }
+}
+
+// ---------- reordering (drag-and-drop + arrow buttons) ----------
+
+const drag = { indices: null, target: null, marked: null };
+
+function onDragStart(i, e) {
+  // dragging a selected row moves the whole selection; otherwise just this row
+  if (!state.sel.has(i)) {
+    state.sel = new Set([i]);
+    state.anchor = i;
+    syncSelection();
+  }
+  drag.indices = [...state.sel].sort((a, b) => a - b);
+  e.dataTransfer.setData('text/plain', '');
+  e.dataTransfer.effectAllowed = 'move';
+  for (const idx of drag.indices) state.rows[idx]?.classList.add('dragging');
+  els.modelList.classList.add('dec-drag'); // other models light up as drop targets
+}
+
+function onDragOver(i, tr, e) {
+  if (!drag.indices) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const rect = tr.getBoundingClientRect();
+  const before = e.clientY < rect.top + rect.height / 2;
+  if (drag.marked && (drag.marked.tr !== tr || drag.marked.before !== before)) clearDropMarker();
+  if (!drag.marked) {
+    tr.classList.add(before ? 'drop-before' : 'drop-after');
+    drag.marked = { tr, before };
+    drag.target = { index: i, before };
+  }
+  // auto-scroll the table while dragging near its edges
+  const wrap = els.tableWrap.getBoundingClientRect();
+  if (e.clientY < wrap.top + 36) els.tableWrap.scrollTop -= 12;
+  else if (e.clientY > wrap.bottom - 36) els.tableWrap.scrollTop += 12;
+}
+
+function clearDropMarker() {
+  if (drag.marked) {
+    drag.marked.tr.classList.remove('drop-before', 'drop-after');
+    drag.marked = null;
+  }
+}
+
+function onDrop(e) {
+  e.preventDefault();
+  if (!drag.indices || !drag.target) return;
+  // insertion point in the current list, then re-expressed with the moved
+  // rows lifted out (the engine's coordinate system)
+  const raw = drag.target.index + (drag.target.before ? 0 : 1);
+  const at = raw - drag.indices.filter((i) => i < raw).length;
+  applyMove(drag.indices, at);
+  endDrag();
+}
+
+function endDrag() {
+  clearDropMarker();
+  if (drag.indices) for (const idx of drag.indices) state.rows[idx]?.classList.remove('dragging');
+  drag.indices = null;
+  drag.target = null;
+  els.modelList.classList.remove('dec-drag');
+  for (const el of els.modelList.querySelectorAll('.drop-target')) el.classList.remove('drop-target');
+}
+
+function applyMove(indices, at) {
+  try {
+    const res = state.session.moveDecorations(state.currentModel, indices, at);
+    if (!res) return;
+    // keep the moved block selected at its new position
+    state.sel = new Set(Array.from({ length: res.count }, (_, k) => res.start + k));
+    state.anchor = res.start;
+    if (res.changed) {
+      renderDetail();
+      renderExport();
+    } else {
+      syncSelection();
+    }
+  } catch (err) {
+    console.error(err);
+    toast(errMsg(err, 'err.splitFail'));
+  }
+}
+
+function moveSelection(delta) {
+  const sel = [...state.sel].sort((a, b) => a - b);
+  if (!sel.length) return;
+  // block position among the non-selected rows, then shifted by one step
+  let k = 0;
+  for (let i = 0; i < sel[0]; i++) if (!state.sel.has(i)) k++;
+  applyMove(sel, k + delta);
+}
+
+els.btnMoveUp.addEventListener('click', () => moveSelection(-1));
+els.btnMoveDown.addEventListener('click', () => moveSelection(1));
+
+// ---------- inline renaming (double-click) ----------
+
+function startInlineRename(el, current, onCommit) {
+  if (el.querySelector('input')) return;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'rename-input';
+  input.value = current;
+  input.spellcheck = false;
+  el.textContent = '';
+  el.appendChild(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (commit && v && v !== current) onCommit(v);
+    else renderAll(); // restore the original display
+  };
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') finish(true);
+    else if (e.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('dblclick', (e) => e.stopPropagation());
+}
+
+function renameModelInline(el, modelId) {
+  const m = state.session.models[modelId];
+  startInlineRename(el, m.name, (v) => {
+    state.session.renameModel(modelId, v);
+    renderAll();
+  });
+}
+
+// ---------- moving decorations to another model (drag onto model row) ----------
+
+function moveSelectionToModel(targetId) {
+  const indices = drag.indices ?? [...state.sel];
+  if (!indices.length || targetId === state.currentModel) return;
+  try {
+    const res = state.session.moveDecorationsToModel(state.currentModel, indices, targetId);
+    if (!res) return;
+    state.sel = new Set();
+    state.anchor = null;
+    renderAll();
+    toast(tn('toast.moved', res.count, { name: res.targetName }), true);
+  } catch (err) {
+    console.error(err);
+    toast(errMsg(err, 'err.splitFail'));
   }
 }
 
@@ -366,6 +583,7 @@ function renderExport() {
   const now = models.length;
   const nSel = state.exportSel.size;
   const partial = nSel < now;
+
 
   els.exModels.innerHTML = s.changed
     ? `${num(s.meta.modelsBefore)}<span class="arrow">→</span>${num(now)}`

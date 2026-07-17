@@ -42,6 +42,11 @@ export default {
   'table.name': 'Nombre',
   'table.id': 'ID',
   'table.hint': 'Clic para seleccionar una fila · Ctrl+clic para alternar · Mayús+clic para un rango. Las entradas seleccionadas se mueven, en orden, a un nuevo modelo creado junto a este.',
+  'reorder.up': 'Subir',
+  'reorder.down': 'Bajar',
+  'reorder.dragTip': 'Arrastra para reordenar',
+  'reorder.hint': 'Arrastra las filas (o usa las flechas) para cambiar el orden de las decoraciones — el .gia exportado conserva exactamente este orden.',
+  "rename.tip": "Doble clic para renombrar",
 
   'export.models': 'modelos',
   'export.exported': 'exportados',
