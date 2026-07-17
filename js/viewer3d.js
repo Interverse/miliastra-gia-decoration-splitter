@@ -11,10 +11,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+// camera directions per quick view, in GAME axes: the display mirrors X, so
+// looking from game +X means placing the camera on the display's −X side
 const AXIS_VIEWS = {
   home: new THREE.Vector3(1, 0.7, 1).normalize(),
-  px: new THREE.Vector3(1, 0.0001, 0).normalize(),
-  nx: new THREE.Vector3(-1, 0.0001, 0).normalize(),
+  px: new THREE.Vector3(-1, 0.0001, 0).normalize(),
+  nx: new THREE.Vector3(1, 0.0001, 0).normalize(),
   py: new THREE.Vector3(0.0001, 1, 0.0001).normalize(),
   ny: new THREE.Vector3(0.0001, -1, 0.0001).normalize(),
   pz: new THREE.Vector3(0, 0.0001, 1).normalize(),
@@ -70,14 +72,20 @@ export class DecorationViewer {
     this.grid.material.transparent = true;
     this.grid.material.opacity = 0.55;
     this.scene.add(this.grid);
+    // the scene displays game coordinates with X mirrored, so every axis
+    // indicator flips its X arm to point toward game +X (display −X);
+    // Y and Z are unaffected
     this.axes = new THREE.AxesHelper(2);
+    this.axes.scale.x = -1;
     this.scene.add(this.axes);
 
     // orientation gizmo (corner inset)
     this.gizmoScene = new THREE.Scene();
-    this.gizmoScene.add(new THREE.AxesHelper(1));
+    const gizmoAxes = new THREE.AxesHelper(1);
+    gizmoAxes.scale.x = -1; // match the mirrored display (game +X)
+    this.gizmoScene.add(gizmoAxes);
     for (const [txt, color, pos] of [
-      ['X', '#ff5f5f', [1.35, 0, 0]], ['Y', '#5fdd5f', [0, 1.35, 0]], ['Z', '#5f9fff', [0, 0, 1.35]],
+      ['X', '#ff5f5f', [-1.35, 0, 0]], ['Y', '#5fdd5f', [0, 1.35, 0]], ['Z', '#5f9fff', [0, 0, 1.35]],
     ]) {
       const c = document.createElement('canvas');
       c.width = c.height = 64;
@@ -143,7 +151,9 @@ export class DecorationViewer {
     this.data = points;
     this.displayPos = new Float32Array(points.length * 3);
     for (let i = 0; i < points.length; i++) {
-      // display mirrors X (decoration space is X-mirrored vs display)
+      // display mirrors X so the scene matches the in-game view; the axis
+      // indicators are X-flipped to match (see gizmo/axes setup), and all
+      // readouts/exports use the raw unmirrored coordinates
       this.displayPos[i * 3] = -points[i].x;
       this.displayPos[i * 3 + 1] = points[i].y;
       this.displayPos[i * 3 + 2] = points[i].z;
@@ -271,7 +281,8 @@ export class DecorationViewer {
     this.grid.position.y = Number.isFinite(minY) ? minY : 0;
     this.grid.visible = wasVisible;
     this.scene.add(this.grid);
-    this.axes.scale.setScalar(Math.max(size / 8, 0.5));
+    const axScale = Math.max(size / 8, 0.5);
+    this.axes.scale.set(-axScale, axScale, axScale); // keep the game-+X flip
   }
 
   _rebuildGeometry() {
