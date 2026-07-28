@@ -36,7 +36,13 @@ export const LANGS = [
   { code: 'it', name: 'Italiano', bcp47: 'it' },
 ];
 
-const STORE_KEY = 'gia-splitter-lang';
+// Language preference is shared across all Miliastra Toolkit sites (same
+// origin ⇒ same localStorage) via the canonical key below; our internal
+// codes are already the toolkit's canonical set, so no mapping is needed.
+// See docs/language-sync.md. LEGACY_KEY is this site's pre-integration key,
+// migrated once on read and never written again.
+const SHARED_KEY = 'miliastra-lang';
+const LEGACY_KEY = 'gia-splitter-lang';
 const dicts = { en };
 let current = 'en';
 let dict = en;
@@ -103,7 +109,9 @@ export function onLangChange(fn) {
   return () => listeners.delete(fn);
 }
 
-export async function setLanguage(code) {
+// Apply a language without persisting it (load-time detection, cross-tab
+// sync). Only setLanguage() — an explicit user choice — writes storage.
+async function applyLanguage(code) {
   if (!LANGS.some((l) => l.code === code)) code = 'en';
   if (!dicts[code]) {
     try {
@@ -117,35 +125,62 @@ export async function setLanguage(code) {
   dict = dicts[code];
   nf = new Intl.NumberFormat(bcp47Of(code));
   pr = new Intl.PluralRules(bcp47Of(code));
-  try {
-    localStorage.setItem(STORE_KEY, code);
-  } catch {}
   document.documentElement.lang = bcp47Of(code);
   applyI18n(document);
   for (const fn of listeners) fn(code);
 }
 
-// Pick the saved language, or the closest match to the browser language.
-export function detectLanguage() {
+export async function setLanguage(code) {
+  if (!LANGS.some((l) => l.code === code)) code = 'en';
   try {
-    const saved = localStorage.getItem(STORE_KEY);
-    if (saved && LANGS.some((l) => l.code === saved)) return saved;
+    localStorage.setItem(SHARED_KEY, code);
   } catch {}
-  const nav = (navigator.language || 'en').toLowerCase();
-  if (nav.startsWith('zh')) {
-    return /tw|hk|mo|hant/.test(nav) ? 'zht' : 'zhs';
-  }
-  const two = nav.slice(0, 2);
-  return LANGS.some((l) => l.code === two) ? two : 'en';
+  return applyLanguage(code);
 }
 
-// Initialize: apply saved/detected language (async for non-English).
+// Pick the saved language, or the closest match to the browser language.
+// Invalid stored values are ignored (not deleted) — another toolkit site
+// may understand them.
+export function detectLanguage() {
+  try {
+    const saved = localStorage.getItem(SHARED_KEY);
+    if (saved && LANGS.some((l) => l.code === saved)) return saved;
+    const legacy = localStorage.getItem(LEGACY_KEY);
+    if (legacy && LANGS.some((l) => l.code === legacy)) {
+      localStorage.setItem(SHARED_KEY, legacy);
+      localStorage.removeItem(LEGACY_KEY);
+      return legacy;
+    }
+  } catch {}
+  const cands = navigator.languages || [navigator.language || 'en'];
+  for (const cand of cands) {
+    const nav = String(cand).toLowerCase();
+    if (nav.startsWith('zh')) {
+      return /tw|hk|mo|hant/.test(nav) ? 'zht' : 'zhs';
+    }
+    const two = nav.slice(0, 2);
+    if (LANGS.some((l) => l.code === two)) return two;
+  }
+  return 'en';
+}
+
+// Initialize: apply saved/detected language (async for non-English), and
+// follow language changes made on other toolkit sites in other tabs.
+// Neither path writes back to localStorage.
 export function initI18n() {
+  window.addEventListener('storage', (e) => {
+    if (
+      e.key === SHARED_KEY && e.newValue && e.newValue !== current
+      && LANGS.some((l) => l.code === e.newValue)
+    ) {
+      applyLanguage(e.newValue);
+    }
+  });
   const lang = detectLanguage();
   if (lang === 'en') {
     document.documentElement.lang = 'en';
     applyI18n(document);
     return Promise.resolve();
   }
-  return setLanguage(lang);
+  return applyLanguage(lang);
 }

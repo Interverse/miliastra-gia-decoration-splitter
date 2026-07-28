@@ -437,13 +437,17 @@ export class DecorationViewer {
   _renderGizmo() {
     const size = 76;
     const w = this.container.clientWidth, h = this.container.clientHeight;
-    if (w < size * 2) return;
-    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
-    this.gizmoCam.position.copy(dir).multiplyScalar(3.2);
-    this.gizmoCam.lookAt(0, 0, 0);
-    const dpr = this.renderer.getPixelRatio();
-    this.renderer.setViewport((w - size) * 1, 0, size, size);
-    this.renderer.setScissor((w - size) * 1, 0, size, size);
+    if (w < size * 2 || h < size) return;
+    // The triad lives at the gizmo-scene origin, and the inset camera is
+    // derived purely from the main camera's ROTATION: its position is the
+    // camera's backward axis scaled to a fixed distance and its quaternion
+    // is copied verbatim. That puts the world origin exactly at the inset's
+    // center every frame — panning (target offset), model transforms, frame
+    // actions, and viewport resets cannot introduce any positional drift.
+    this.gizmoCam.position.set(0, 0, 4.2).applyQuaternion(this.camera.quaternion);
+    this.gizmoCam.quaternion.copy(this.camera.quaternion);
+    this.renderer.setViewport(w - size, 0, size, size);
+    this.renderer.setScissor(w - size, 0, size, size);
     this.renderer.setScissorTest(true);
     this.renderer.render(this.gizmoScene, this.gizmoCam);
     this.renderer.setScissorTest(false);
