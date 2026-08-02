@@ -176,4 +176,6 @@ export default {
   'sel.acrossModels': '{n} entri dipilih di {k} model',
   'gil.op.labelReorder': 'Menyusun ulang {n} dekorasi',
   'gil.op.labelRename': 'Mengganti nama {n} dekorasi',
+  'gil.op.labelMove': 'Memindahkan {n} dekorasi',
+  'gil.err.moveLimit': 'Satu objek induk dapat menampung paling banyak {max} dekorasi — pemindahan ini akan membuat “{name}” berisi {total}.',
 };

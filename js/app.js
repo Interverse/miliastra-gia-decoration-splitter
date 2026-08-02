@@ -9,7 +9,7 @@
 // All user-facing text goes through js/i18n.js (t/tn/num + data-i18n).
 
 import { GiaSession, MAX_DECORATIONS_PER_MODEL } from './gia-splitter.js';
-import { GilSession, MAX_SCALE } from './gil-splitter.js';
+import { GilSession, MAX_SCALE, MAX_DECORATIONS_PER_PARENT } from './gil-splitter.js';
 import { DecorationViewer } from './viewer3d.js';
 import { t, tn, num, LANGS, currentLang, setLanguage, initI18n, onLangChange, setI18nVariant } from './i18n.js';
 
@@ -666,7 +666,15 @@ function onDragStart(i, e) {
   e.dataTransfer.setData('text/plain', '');
   e.dataTransfer.effectAllowed = 'move';
   for (const idx of drag.indices) state.rows[idx]?.classList.add('dragging');
-  if (state.mode === 'gil') return; // no cross-parent drop targets in .gil mode
+  if (state.mode === 'gil') {
+    // other world objects light up as drop targets; those the move would
+    // push past the per-parent limit are dimmed immediately
+    els.modelList.classList.add('dec-drag');
+    for (const row of els.modelList.querySelectorAll('.model-row')) {
+      markGilDropTarget(row, Number(row.dataset.objId));
+    }
+    return;
+  }
   els.modelList.classList.add('dec-drag'); // other models light up as drop targets
   // immediately dim models that cannot accept this many entries
   const models = state.session.models;
@@ -1216,6 +1224,31 @@ function makeGilObjRow(o) {
   }
 
   row.append(cb, name, badges);
+
+  // decoration drops: any OTHER world object accepts the dragged rows (the
+  // move appends at the end of its list); over-limit targets show as invalid.
+  // markGilDropTarget also runs here so virtual-list redraws mid-drag keep
+  // the dimmed state.
+  if (drag.indices && state.mode === 'gil') markGilDropTarget(row, o.id);
+  row.addEventListener('dragover', (e) => {
+    if (!drag.indices || o.id === effectiveGilParent()?.id) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const target = g.session.level.objectById(o.id);
+    const overflow = target
+      && target.decorationIds.length + drag.indices.length > MAX_DECORATIONS_PER_PARENT;
+    row.classList.add(overflow ? 'drop-invalid' : 'drop-target');
+  });
+  row.addEventListener('dragleave', () => row.classList.remove('drop-target', 'drop-invalid'));
+  row.addEventListener('drop', (e) => {
+    if (!drag.indices || o.id === effectiveGilParent()?.id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const indices = drag.indices;
+    endDrag();
+    applyGilMoveToParent(indices, o.id);
+  });
+
   if (o.eligible) {
     row.addEventListener('click', (e) => {
       if (e.target !== cb) onGilParentClick(o.id, e);
@@ -1746,6 +1779,42 @@ function commitGilRename(ids, name) {
   } catch (err) {
     console.error(err);
     showError(`<p>${escapeHtml(t('gil.opFailed'))}</p><p class="e">${escapeHtml(err.message)}</p>`);
+  }
+}
+
+// Dim a sidebar row that cannot accept the dragged decorations (would exceed
+// the game's per-parent limit); the localized tooltip explains why.
+function markGilDropTarget(row, objId) {
+  const focus = effectiveGilParent();
+  if (!focus || objId === focus.id || !drag.indices) return;
+  const target = state.gil.session.level.objectById(objId);
+  if (!target) return;
+  const total = target.decorationIds.length + drag.indices.length;
+  if (total > MAX_DECORATIONS_PER_PARENT) {
+    row.classList.add('drop-full');
+    row.title = t('gil.err.moveLimit', {
+      max: MAX_DECORATIONS_PER_PARENT,
+      total,
+      name: target.name ?? String(objId),
+    });
+  }
+}
+
+// Move the dragged decorations from the focused parent into another world
+// object (appended at the end, back-references rewritten, byte-preserving).
+// The id-based selection follows the moved decorations to their new parent.
+function applyGilMoveToParent(indices, targetId) {
+  const g = state.gil;
+  const parent = effectiveGilParent();
+  if (!parent || parent.id === targetId) return;
+  try {
+    const res = g.session.moveDecorationsToParent(parent.id, indices, targetId);
+    if (!res) return;
+    toast(tn('toast.moved', res.count, { name: res.targetName || t('model.unnamed') }), true);
+    renderAll();
+  } catch (err) {
+    console.error(err);
+    toast(errMsg(err, 'err.splitFail'));
   }
 }
 

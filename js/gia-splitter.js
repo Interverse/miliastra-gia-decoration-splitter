@@ -19,6 +19,8 @@
 //
 // If no split was performed, serialize() returns the original input bytes.
 
+import { composeTransforms, makeParentComposer, reparentLocal, transformEq } from './transforms.js';
+
 // the game rejects models holding more than this many Decoration entries
 export const MAX_DECORATIONS_PER_MODEL = 999;
 
@@ -123,10 +125,10 @@ const encPacked = (nums) => {
   return Uint8Array.from(bytes);
 };
 
-// f32 vec3 message {1:x, 2:y, 3:z} — display-only helper for the 3D viewer;
-// the write path never re-encodes these values
-function readVec3F(b) {
-  const v = { x: 0, y: 0, z: 0 };
+// f32 vec3 message {1:x, 2:y, 3:z}; missing components default to `dflt`
+// (0 for positions/rotations, 1 for scale — the game omits zero components)
+function readVec3F(b, dflt = 0) {
+  const v = { x: dflt, y: dflt, z: dflt };
   for (const it of parseMsg(b)) {
     if (it.wire !== 5) continue;
     const f = new DataView(it.val.buffer, it.val.byteOffset).getFloat32(0, true);
@@ -135,6 +137,18 @@ function readVec3F(b) {
     else if (it.field === 3) v.z = f;
   }
   return v;
+}
+
+// f32 vec3 encoded the way the game writes it: zero components omitted
+function encVec3F(v) {
+  const items = [];
+  for (const [field, val] of [[1, v.x], [2, v.y], [3, v.z]]) {
+    if (val === 0) continue;
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setFloat32(0, val, true);
+    items.push({ field, wire: 5, val: b });
+  }
+  return encodeMsg(items);
 }
 
 // identity message {2: classDomain, 4: guid}
@@ -158,7 +172,7 @@ function rewriteIdentityGuid(b, guid) {
 // model (object) entry: guid, name, canonical decoration list, other refs,
 // and (for the 3D viewer) the model's world position + zoom
 function summarizeModel(entryBody) {
-  const s = { guid: null, name: '', packed: null, refDecGuids: [], otherRefGuids: [], pos: null, zoom: null, wrapper: 11 };
+  const s = { guid: null, name: '', packed: null, refDecGuids: [], otherRefGuids: [], pos: null, rot: null, zoom: null, wrapper: 11 };
   const items = parseMsg(entryBody);
   const layout = modelLayout(items);
   s.wrapper = layout.wrapper;
@@ -193,7 +207,8 @@ function summarizeModel(entryBody) {
             for (const f of parseMsg(body.val)) {
               if (f.wire !== 2) continue;
               if (f.field === 1) s.pos = readVec3F(f.val);
-              else if (f.field === 3) s.zoom = readVec3F(f.val);
+              else if (f.field === 2) s.rot = readVec3F(f.val);
+              else if (f.field === 3) s.zoom = readVec3F(f.val, 1);
             }
           }
         }
@@ -206,9 +221,12 @@ function summarizeModel(entryBody) {
   return s;
 }
 
-// Decoration entry world-position parse (display-only, for the 3D viewer):
-// entry field 21 → 1 → component 5 type 1 → body 11 → field 1 vec3.
-function parseDecorationPosition(entryBody) {
+// Decoration local transform parse (entry field 21 → 1 → component 5 type 1
+// → body → {1: pos, 2: rot, 3: scale}, defaults 0/0/1). Returns null when the
+// entry carries no transform component at all. Read for the 3D viewer and as
+// the basis for reparenting recalculation; unchanged entries are never
+// re-encoded from these values.
+function parseDecorationTransform(entryBody) {
   for (const it of parseMsg(entryBody)) {
     if (it.field !== 21 || it.wire !== 2) continue;
     for (const p of parseMsg(it.val)) {
@@ -219,15 +237,19 @@ function parseDecorationPosition(entryBody) {
         const type = comp.find((x) => x.field === 1 && x.wire === 0);
         if (!type || Number(type.val) !== 1) continue;
         const body = comp.find((x) => x.wire === 2);
-        if (!body) continue;
+        if (!body) return null;
+        const t = { pos: { x: 0, y: 0, z: 0 }, rot: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
         for (const f of parseMsg(body.val)) {
-          if (f.field === 1 && f.wire === 2) return readVec3F(f.val);
+          if (f.wire !== 2) continue;
+          if (f.field === 1) t.pos = readVec3F(f.val);
+          else if (f.field === 2) t.rot = readVec3F(f.val);
+          else if (f.field === 3) t.scale = readVec3F(f.val, 1);
         }
-        return { x: 0, y: 0, z: 0 }; // transform present, position omitted
+        return t;
       }
     }
   }
-  return { x: 0, y: 0, z: 0 };
+  return null;
 }
 
 // non-model entry: class number + guid + name
@@ -357,9 +379,10 @@ function rebuildPrefabBody(prefabBody, { chunk, isClone, rename = false, guid, n
 }
 
 // Rewrite a Decoration entry's parent-model reference (component 4/40 field
-// 502) and/or its name (entry field 3 + component 4/1). Every other byte of
-// the entry is preserved.
-function rebuildDecorationEntry(entryBody, { parent = null, name = null }) {
+// 502), its name (entry field 3 + component 4/1), and/or its local transform
+// (component 5/1 body fields 1/2/3 — recalculated on cross-model moves so
+// world placement is preserved). Every other byte of the entry survives.
+function rebuildDecorationEntry(entryBody, { parent = null, name = null, transform = null }) {
   const mapComponent4 = (compBytes) => {
     const comp = parseMsg(compBytes);
     const type = comp.find((x) => x.field === 1 && x.wire === 0);
@@ -378,6 +401,28 @@ function rebuildDecorationEntry(entryBody, { parent = null, name = null }) {
     }
     return compBytes;
   };
+  // transform component: replace pos/rot/scale, keep every other body field
+  const mapComponent5 = (compBytes) => {
+    const comp = parseMsg(compBytes);
+    const type = comp.find((x) => x.field === 1 && x.wire === 0);
+    if (!type || Number(type.val) !== 1) return compBytes;
+    return encodeMsg(comp.map((x) => {
+      if (x.wire !== 2) return x;
+      const body = parseMsg(x.val);
+      const out = [];
+      let s1 = false, s2 = false, s3 = false;
+      for (const f of body) {
+        if (f.field === 1 && f.wire === 2) { out.push({ field: 1, wire: 2, val: encVec3F(transform.pos) }); s1 = true; }
+        else if (f.field === 2 && f.wire === 2) { out.push({ field: 2, wire: 2, val: encVec3F(transform.rot) }); s2 = true; }
+        else if (f.field === 3 && f.wire === 2) { out.push({ field: 3, wire: 2, val: encVec3F(transform.scale) }); s3 = true; }
+        else out.push(f);
+      }
+      if (!s1) out.splice(0, 0, { field: 1, wire: 2, val: encVec3F(transform.pos) });
+      if (!s2) out.splice(1, 0, { field: 2, wire: 2, val: encVec3F(transform.rot) });
+      if (!s3) out.splice(2, 0, { field: 3, wire: 2, val: encVec3F(transform.scale) });
+      return { ...x, val: encodeMsg(out) };
+    }));
+  };
   return encodeMsg(parseMsg(entryBody).map((it) => {
     if (it.field === 3 && it.wire === 2 && name != null) {
       return { field: 3, wire: 2, val: utf8enc.encode(name) };
@@ -386,8 +431,9 @@ function rebuildDecorationEntry(entryBody, { parent = null, name = null }) {
     return { field: 21, wire: 2, val: encodeMsg(parseMsg(it.val).map((p) => {
       if (p.field !== 1 || p.wire !== 2) return p;
       return { field: 1, wire: 2, val: encodeMsg(parseMsg(p.val).map((b) => {
-        if (b.field !== 4 || b.wire !== 2) return b;
-        return { field: 4, wire: 2, val: mapComponent4(b.val) };
+        if (b.field === 4 && b.wire === 2) return { field: 4, wire: 2, val: mapComponent4(b.val) };
+        if (b.field === 5 && b.wire === 2 && transform != null) return { field: 5, wire: 2, val: mapComponent5(b.val) };
+        return b;
       })) };
     })) };
   }));
@@ -412,7 +458,9 @@ export class GiaSession {
     this._top = parseMsg(bytes.subarray(20, 20 + payloadLen));
 
     this._decNames = new Map(); // decoration guid -> entry name
-    this._decPos = new Map();   // decoration guid -> local position (viewer only)
+    this._decT0 = new Map();    // decoration guid -> parsed local transform (or null)
+    this._decT = new Map();     // decoration guid -> current effective local transform
+    this._decTransformDirty = new Set(); // guids whose transform must be rewritten
     this._models = [];
     let exportTag = '', engineVersion = '';
     let decorationEntries = 0, otherEntries = 0;
@@ -439,6 +487,7 @@ export class GiaSession {
           name: s.name,
           decGuids: s.decGuids.slice(),
           worldPos: s.pos ?? { x: 0, y: 0, z: 0 },
+          rot: s.rot ?? { x: 0, y: 0, z: 0 },
           zoom: s.zoom ?? { x: zd, y: zd, z: zd },
           isNew: false,
         });
@@ -449,7 +498,9 @@ export class GiaSession {
           decorationEntries++;
           if (e.guid != null) {
             this._decNames.set(e.guid, e.name);
-            this._decPos.set(e.guid, parseDecorationPosition(it.val));
+            const t = parseDecorationTransform(it.val);
+            this._decT0.set(e.guid, t);
+            this._decT.set(e.guid, t);
           }
         } else {
           otherEntries++;
@@ -498,22 +549,23 @@ export class GiaSession {
     }));
   }
 
-  // 3D-viewer view: one point per decoration, at its world position
-  // (model position + local position × model zoom). Read-only — never
-  // feeds back into serialization.
+  // 3D-viewer view: one point per decoration, at its world position (full
+  // verified composition: model pos + rot × (zoom ⊙ local pos)). Read-only —
+  // display never feeds back into serialization.
   decorationPoints(modelId) {
     const m = this._models[modelId];
     if (!m) fail('Unknown model.', 'err.unknownModel');
-    const mp = m.worldPos, z = m.zoom;
+    const compose = makeParentComposer({ pos: m.worldPos, rot: m.rot, scale: m.zoom });
     return m.decGuids.map((guid, index) => {
-      const p = this._decPos.get(guid) ?? { x: 0, y: 0, z: 0 };
+      const local = this._decT.get(guid);
+      const p = local ? compose(local).pos : m.worldPos;
       return {
         index,
         guid,
         name: this._decNames.get(guid) ?? null,
-        x: mp.x + p.x * z.x,
-        y: mp.y + p.y * z.y,
-        z: mp.z + p.z * z.z,
+        x: p.x,
+        y: p.y,
+        z: p.z,
       };
     });
   }
@@ -620,6 +672,29 @@ export class GiaSession {
     }
     const set = new Set(picked);
     const moving = picked.map((i) => src.decGuids[i]);
+
+    // Recompute each moved decoration's local transform relative to the new
+    // model so its world placement is preserved (verified composition — see
+    // js/transforms.js). No-ops when the models' transforms are identical;
+    // a decoration whose recomputed transform matches its original parsed
+    // values (e.g. moved away and back) returns to byte-preserving state.
+    const fromT = { pos: src.worldPos, rot: src.rot, scale: src.zoom };
+    const toT = { pos: dst.worldPos, rot: dst.rot, scale: dst.zoom };
+    for (const g of moving) {
+      const local = this._decT.get(g);
+      if (!local) continue; // entry has no transform component — nothing to rewrite
+      const next = reparentLocal(local, fromT, toT);
+      if (!next) continue;
+      const orig = this._decT0.get(g);
+      if (orig && transformEq(next, orig)) {
+        this._decT.set(g, orig);
+        this._decTransformDirty.delete(g);
+      } else {
+        this._decT.set(g, next);
+        this._decTransformDirty.add(g);
+      }
+    }
+
     src.decGuids = src.decGuids.filter((_, i) => !set.has(i));
     dst.decGuids = [...dst.decGuids, ...moving];
     this.moveCount++;
@@ -660,6 +735,7 @@ export class GiaSession {
       name: this.previewSplitName(modelId),
       decGuids: moved,
       worldPos: m.worldPos,
+      rot: m.rot,
       zoom: m.zoom,
       isNew: true,
     };
@@ -764,8 +840,9 @@ export class GiaSession {
           if (dropDec.has(e.guid)) return;
           const parent = reparent.get(e.guid) ?? null;
           const name = this._decRenames.has(e.guid) ? this._decNames.get(e.guid) : null;
-          if (parent != null || name != null) {
-            out.push({ field: 2, wire: 2, val: rebuildDecorationEntry(it.val, { parent, name }) });
+          const transform = this._decTransformDirty.has(e.guid) ? this._decT.get(e.guid) : null;
+          if (parent != null || name != null || transform != null) {
+            out.push({ field: 2, wire: 2, val: rebuildDecorationEntry(it.val, { parent, name, transform }) });
           } else {
             out.push(it);
           }

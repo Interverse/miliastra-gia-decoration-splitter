@@ -176,4 +176,6 @@ export default {
   'sel.acrossModels': '已選 {n} 個條目，分佈於 {k} 個模型',
   'gil.op.labelReorder': '重新排序 {n} 個裝飾',
   'gil.op.labelRename': '重新命名 {n} 個裝飾',
+  'gil.op.labelMove': '移動 {n} 個裝飾',
+  'gil.err.moveLimit': '一個父物件最多可容納 {max} 個裝飾——此次移動會使「{name}」達到 {total} 個。',
 };

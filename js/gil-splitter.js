@@ -23,9 +23,11 @@ import {
   msgField,
   bytesField,
   varintField,
+  f32Field,
   encodePackedVarints,
 } from './gil/gil.js';
-import { parseLevel, COMP_A_PAYLOAD, readComponent } from './gil/model.js';
+import { parseLevel, COMP_A_PAYLOAD, COMP_B_PAYLOAD, readComponent } from './gil/model.js';
+import { reparentLocal, IDENTITY_TRANSFORM } from './transforms.js';
 import {
   planSplit,
   applySplit,
@@ -35,6 +37,21 @@ import {
 } from './gil/split.js';
 
 export { MAX_SCALE };
+
+// The game rejects parents holding more than this many decorations (same
+// limit as .gia models; Cozy Disc Golf's reference parents cap at exactly
+// 999). Cross-parent moves are validated against it before anything mutates.
+export const MAX_DECORATIONS_PER_PARENT = 999;
+
+// vec3 encoded the way the game (and the engine) writes it: float32 fields
+// {1:x, 2:y, 3:z} with zero components omitted.
+function encodeVec3(v) {
+  const fields = [];
+  if (v.x !== 0) fields.push(f32Field(1, v.x));
+  if (v.y !== 0) fields.push(f32Field(2, v.y));
+  if (v.z !== 0) fields.push(f32Field(3, v.z));
+  return encodeMessage(fields);
+}
 
 export class GilSession {
   constructor(input) {
@@ -396,6 +413,300 @@ export class GilSession {
     this._undo.push({ label: { key: 'gil.op.labelRename', params: { n: changed } }, snap });
     this._redo.length = 0;
     return { changed };
+  }
+
+  /**
+   * Move the decorations at `indices` (positions in the source parent's
+   * current list) to the END of another world object's decoration list, in
+   * their current relative order — the .gil counterpart of
+   * GiaSession.moveDecorationsToModel.
+   *
+   * Byte-level: rewrites the two parents' packed id lists (component A/40
+   * field 501 — created on the target if absent, dropped on the source when
+   * emptied, matching the engine's own conventions) and each moved
+   * decoration's parent back-reference (component A/40 field 502). Every
+   * other byte survives. Rejects moves past MAX_DECORATIONS_PER_PARENT with
+   * a localized error (err.i18n) BEFORE mutating; on success pushes one
+   * undoable operation and returns {count, targetName}.
+   */
+  moveDecorationsToParent(fromId, indices, toId) {
+    const L = this.level;
+    const from = L.objectById(fromId);
+    const to = L.objectById(toId);
+    if (!from || !to || fromId === toId) return null;
+    const list = from.decorationIds;
+    const byId = this._decoMap();
+    if (!list.length || !list.every((id) => byId.has(id))) return null;
+    const picked = [...new Set(indices)].sort((a, b) => a - b);
+    if (!picked.length) return null;
+    if (picked[0] < 0 || picked[picked.length - 1] >= list.length) return null;
+
+    const total = to.decorationIds.length + picked.length;
+    if (total > MAX_DECORATIONS_PER_PARENT) {
+      const e = new Error(
+        `A parent object can hold at most ${MAX_DECORATIONS_PER_PARENT} decorations — ` +
+          `this move would give "${to.name ?? toId}" ${total}.`
+      );
+      e.i18n = {
+        key: 'gil.err.moveLimit',
+        params: { max: MAX_DECORATIONS_PER_PARENT, total, name: to.name ?? String(toId) },
+      };
+      throw e;
+    }
+
+    const set = new Set(picked);
+    const moving = picked.map((i) => list[i]);
+    const movingSet = new Set(moving);
+    const fromNext = list.filter((_, i) => !set.has(i));
+    const toNext = [...to.decorationIds, ...moving];
+
+    // Recompute each moved decoration's LOCAL transform relative to the new
+    // parent so its world placement is preserved (verified composition, see
+    // js/transforms.js). Computed before any mutation; null = the stored
+    // transform already reproduces the same world placement (equal parent
+    // transforms) and its bytes stay untouched.
+    const newLocal = new Map();
+    for (const did of moving) {
+      const deco = byId.get(did);
+      const next = reparentLocal(
+        deco.transform ?? IDENTITY_TRANSFORM,
+        from.transform,
+        to.transform
+      );
+      if (next) newLocal.set(did, next);
+    }
+
+    // Rewrite (or create) a parent entry's comp-40 packed 501 list in place,
+    // preserving the field's position and every unrelated byte. An empty
+    // list removes the 501 field, as the engine does after extraction.
+    const rewriteList = (ef, ids) => {
+      for (let j = 0; j < ef.length; j++) {
+        const cf = ef[j];
+        if (cf.num !== 5 || cf.wire !== 2) continue;
+        let c;
+        try {
+          c = readComponent(cf, COMP_A_PAYLOAD);
+        } catch {
+          continue;
+        }
+        if (c.type !== 40) continue;
+        let payloadFields = [];
+        if (c.payload && c.payload.raw.length) {
+          try {
+            payloadFields = parseMessage(c.payload.raw);
+          } catch {
+            payloadFields = [];
+          }
+        }
+        let saw = false;
+        const np = [];
+        for (const pf of payloadFields) {
+          if (pf.num === 501 && pf.wire === 2) {
+            saw = true;
+            if (ids.length) np.push(bytesField(501, encodePackedVarints(ids)));
+          } else {
+            np.push(pf);
+          }
+        }
+        if (!saw && ids.length) np.push(bytesField(501, encodePackedVarints(ids)));
+        const pfNum = c.payloadFieldNum ?? COMP_A_PAYLOAD[40];
+        const newComp = c.payload
+          ? c.fields.map((x) => (x === c.payload ? bytesField(pfNum, encodeMessage(np)) : x))
+          : [...c.fields, bytesField(pfNum, encodeMessage(np))];
+        ef[j] = msgField(5, newComp);
+        return true;
+      }
+      if (!ids.length) return true;
+      // object had no comp-40 at all: create one after the last component
+      const comp = msgField(5, [
+        varintField(1, 40),
+        bytesField(COMP_A_PAYLOAD[40], encodeMessage([bytesField(501, encodePackedVarints(ids))])),
+      ]);
+      let at = ef.length;
+      for (let j = ef.length - 1; j >= 0; j--) {
+        if (ef[j].num === 5 || ef[j].num === 2 || ef[j].num === 1) {
+          at = j + 1;
+          break;
+        }
+      }
+      ef.splice(at, 0, comp);
+      return true;
+    };
+
+    const snap = this._snapshot();
+
+    // ---- container 5: both parents' decoration-id lists
+    const objCont = L.objectContainerField;
+    const objFields = parseMessage(objCont.raw);
+    let doneFrom = false;
+    let doneTo = false;
+    for (let i = 0; i < objFields.length && !(doneFrom && doneTo); i++) {
+      const f = objFields[i];
+      if (f.num !== 1 || f.wire !== 2) continue;
+      let ef;
+      try {
+        ef = parseMessage(f.raw);
+      } catch {
+        continue;
+      }
+      const idF = ef.find((x) => x.num === 1 && x.wire === 0);
+      if (!idF) continue;
+      const oid = fieldVarint(idF);
+      if (oid === fromId && rewriteList(ef, fromNext)) {
+        objFields[i] = msgField(1, ef);
+        doneFrom = true;
+      } else if (oid === toId && rewriteList(ef, toNext)) {
+        objFields[i] = msgField(1, ef);
+        doneTo = true;
+      }
+    }
+    if (!doneFrom || !doneTo) return null; // nothing has been assigned yet
+
+    // ---- container 27: moved decorations' parent back-reference (502) and,
+    // when the parents' transforms differ, the recomputed local transform
+    const decoCont = L.decoContainerField;
+    const decoFields = parseMessage(decoCont.raw);
+    const parentRef = varintField(502, toId);
+    for (let i = 0; i < decoFields.length; i++) {
+      const f = decoFields[i];
+      if (f.num !== 2 || f.wire !== 2) continue;
+      let ef;
+      try {
+        ef = parseMessage(f.raw);
+      } catch {
+        continue;
+      }
+      const idF = ef.find((x) => x.num === 1 && x.wire === 0);
+      if (!idF || !movingSet.has(fieldVarint(idF))) continue;
+      const did = fieldVarint(idF);
+      let done = false;
+      for (let j = 0; j < ef.length && !done; j++) {
+        const cf = ef[j];
+        if (cf.num !== 4 || cf.wire !== 2) continue;
+        let c;
+        try {
+          c = readComponent(cf, COMP_A_PAYLOAD);
+        } catch {
+          continue;
+        }
+        if (c.type !== 40) continue;
+        let payloadFields = [];
+        if (c.payload && c.payload.raw.length) {
+          try {
+            payloadFields = parseMessage(c.payload.raw);
+          } catch {
+            payloadFields = [];
+          }
+        }
+        let saw = false;
+        const np = payloadFields.map((pf) =>
+          pf.num === 502 && pf.wire === 0 ? ((saw = true), parentRef) : pf
+        );
+        if (!saw) np.push(parentRef);
+        const pfNum = c.payloadFieldNum ?? COMP_A_PAYLOAD[40];
+        const newComp = c.payload
+          ? c.fields.map((x) => (x === c.payload ? bytesField(pfNum, encodeMessage(np)) : x))
+          : [...c.fields, bytesField(pfNum, encodeMessage(np))];
+        ef[j] = msgField(4, newComp);
+        done = true;
+      }
+      if (!done) {
+        // decoration had no comp-40: create one carrying the back-reference
+        const comp = msgField(4, [
+          varintField(1, 40),
+          bytesField(COMP_A_PAYLOAD[40], encodeMessage([parentRef])),
+        ]);
+        let at = ef.length;
+        for (let j = ef.length - 1; j >= 0; j--) {
+          if (ef[j].num === 4 || ef[j].num === 2 || ef[j].num === 1) {
+            at = j + 1;
+            break;
+          }
+        }
+        ef.splice(at, 0, comp);
+      }
+      const tf = newLocal.get(did);
+      if (tf) this._rewriteDecoTransform(ef, tf);
+      decoFields[i] = msgField(2, ef);
+    }
+
+    objCont.raw = encodeMessage(objFields);
+    decoCont.raw = encodeMessage(decoFields);
+    L.invalidate();
+    this._undo.push({
+      label: { key: 'gil.op.labelMove', params: { n: moving.length } },
+      snap,
+    });
+    this._redo.length = 0;
+    return { count: moving.length, targetName: to.name };
+  }
+
+  /**
+   * Replace pos/rot/scale (payload fields 1/2/3) inside a decoration entry's
+   * transform component (list B type 1), preserving every other subfield —
+   * the same rewrite pattern the engine uses when building extracted world
+   * objects. Creates the component if the decoration had none.
+   * `ef` is the decoration entry's parsed field list, mutated in place.
+   */
+  _rewriteDecoTransform(ef, tf) {
+    const posRaw = encodeVec3(tf.pos);
+    const rotRaw = encodeVec3(tf.rot);
+    const scaleRaw = encodeVec3(tf.scale);
+    for (let j = 0; j < ef.length; j++) {
+      const cf = ef[j];
+      if (cf.num !== 5 || cf.wire !== 2) continue;
+      let c;
+      try {
+        c = readComponent(cf, COMP_B_PAYLOAD);
+      } catch {
+        continue;
+      }
+      if (c.type !== 1) continue;
+      let tFields = [];
+      if (c.payload && c.payload.raw.length) {
+        try {
+          tFields = parseMessage(c.payload.raw);
+        } catch {
+          tFields = [];
+        }
+      }
+      const newT = [];
+      let saw1 = false;
+      let saw2 = false;
+      let saw3 = false;
+      for (const pf of tFields) {
+        if (pf.num === 1 && pf.wire === 2) { newT.push(bytesField(1, posRaw)); saw1 = true; }
+        else if (pf.num === 2 && pf.wire === 2) { newT.push(bytesField(2, rotRaw)); saw2 = true; }
+        else if (pf.num === 3 && pf.wire === 2) { newT.push(bytesField(3, scaleRaw)); saw3 = true; }
+        else newT.push(pf);
+      }
+      if (!saw1) newT.splice(0, 0, bytesField(1, posRaw));
+      if (!saw2) newT.splice(1, 0, bytesField(2, rotRaw));
+      if (!saw3) newT.splice(2, 0, bytesField(3, scaleRaw));
+      const pfNum = c.payloadFieldNum ?? COMP_B_PAYLOAD[1];
+      const newComp = c.payload
+        ? c.fields.map((x) => (x === c.payload ? bytesField(pfNum, encodeMessage(newT)) : x))
+        : [...c.fields, bytesField(pfNum, encodeMessage(newT))];
+      ef[j] = msgField(5, newComp);
+      return;
+    }
+    // no transform component: create one holding just pos/rot/scale
+    const comp = msgField(5, [
+      varintField(1, 1),
+      bytesField(COMP_B_PAYLOAD[1], encodeMessage([
+        bytesField(1, posRaw),
+        bytesField(2, rotRaw),
+        bytesField(3, scaleRaw),
+      ])),
+    ]);
+    let at = ef.length;
+    for (let j = ef.length - 1; j >= 0; j--) {
+      if (ef[j].num === 5 || ef[j].num === 4 || ef[j].num === 2 || ef[j].num === 1) {
+        at = j + 1;
+        break;
+      }
+    }
+    ef.splice(at, 0, comp);
   }
 
   // ---------- undo / redo (exact byte-level state) ----------

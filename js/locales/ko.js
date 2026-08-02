@@ -176,4 +176,6 @@ export default {
   'sel.acrossModels': '모델 {k}개에 걸쳐 항목 {n}개 선택됨',
   'gil.op.labelReorder': '장식 {n}개 순서 변경',
   'gil.op.labelRename': '장식 {n}개 이름 변경',
+  'gil.op.labelMove': '장식 {n}개 이동',
+  'gil.err.moveLimit': '하나의 부모 오브젝트는 장식을 최대 {max}개까지 보유할 수 있습니다. 이 이동을 수행하면 “{name}”은(는) {total}개가 됩니다.',
 };

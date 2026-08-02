@@ -188,4 +188,6 @@ export default {
   'sel.acrossModels': '{n} entries selected across {k} models',
   'gil.op.labelReorder': 'Reorder {n} decoration(s)',
   'gil.op.labelRename': 'Rename {n} decoration(s)',
+  'gil.op.labelMove': 'Move {n} decoration(s)',
+  'gil.err.moveLimit': 'A parent object can hold at most {max} decorations — this move would give “{name}” {total}.',
 };

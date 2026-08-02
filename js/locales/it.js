@@ -181,4 +181,6 @@ export default {
   'sel.acrossModels': '{n} voci selezionate in {k} modelli',
   'gil.op.labelReorder': 'Riordina {n} decorazione/i',
   'gil.op.labelRename': 'Rinomina {n} decorazione/i',
+  'gil.op.labelMove': 'Sposta {n} decorazione/i',
+  'gil.err.moveLimit': 'Un oggetto padre può contenere al massimo {max} decorazioni — questo spostamento porterebbe «{name}» a {total}.',
 };

@@ -176,4 +176,6 @@ export default {
   'sel.acrossModels': 'เลือกรายการแล้ว {n} รายการใน {k} โมเดล',
   'gil.op.labelReorder': 'จัดลำดับของตกแต่งใหม่ {n} ชิ้น',
   'gil.op.labelRename': 'เปลี่ยนชื่อของตกแต่ง {n} ชิ้น',
+  'gil.op.labelMove': 'ย้ายของตกแต่ง {n} ชิ้น',
+  'gil.err.moveLimit': 'วัตถุแม่หนึ่งชิ้นเก็บของตกแต่งได้สูงสุด {max} ชิ้น — การย้ายนี้จะทำให้ “{name}” มี {total} ชิ้น',
 };

@@ -176,4 +176,6 @@ export default {
   'sel.acrossModels': '{k} 個のモデルにわたり {n} 件の項目を選択中',
   'gil.op.labelReorder': 'デコレーション {n} 個を並べ替え',
   'gil.op.labelRename': 'デコレーション {n} 個の名前を変更',
+  'gil.op.labelMove': 'デコレーション {n} 個を移動',
+  'gil.err.moveLimit': '1 つの親オブジェクトが保持できるデコレーションは最大 {max} 個です。この移動を行うと「{name}」は {total} 個になります。',
 };

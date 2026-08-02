@@ -176,4 +176,6 @@ export default {
   'sel.acrossModels': 'Đã chọn {n} mục trong {k} mô hình',
   'gil.op.labelReorder': 'Sắp xếp lại {n} vật trang trí',
   'gil.op.labelRename': 'Đổi tên {n} vật trang trí',
+  'gil.op.labelMove': 'Di chuyển {n} vật trang trí',
+  'gil.err.moveLimit': 'Một vật thể cha chỉ chứa tối đa {max} vật trang trí — lần di chuyển này sẽ khiến “{name}” có {total}.',
 };

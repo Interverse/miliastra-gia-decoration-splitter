@@ -44,8 +44,12 @@ sites via the shared `miliastra-lang` key.
    selected row moves the whole selection) or use the ▲/▼ buttons. The # column
    always shows the current order, and the exported .gia keeps exactly that order.
    Dragging rows onto another model in the sidebar **moves them into that model**
-   (appended at the end, bytes preserved, only the parent reference rewritten);
-   valid targets light up while you drag. Moves that would push the target past
+   (appended at the end). The moved decorations' **local transforms are
+   recalculated against the new model's position/rotation/zoom so they keep
+   their exact world placement** — visually nothing moves, only the parent
+   changes; when both models share the same transform, the entries' bytes are
+   preserved untouched (only the parent reference is rewritten). Valid
+   targets light up while you drag. Moves that would push the target past
    the game's **999-entries-per-model limit** are rejected: over-limit targets
    dim immediately when the drag starts, turn red on hover, and dropping shows
    a warning while leaving both models unchanged.
@@ -84,6 +88,18 @@ sites via the shared `miliastra-lang` key.
    use **Rename selected** to give them all the same name in one undoable
    operation — only the name field inside each decoration's name component is
    rewritten, and extracted objects carry their renamed names.
+   Dragging rows onto another world object in the sidebar **moves them into
+   that object** (appended at the end; the two parents' id lists and the
+   moved decorations' parent references are rewritten, everything else keeps
+   its bytes). The moved decorations' **local transforms are recalculated
+   against the new parent** (inverse of the game's verified composition
+   `world = P + R·(S⊙p)`), so they keep their exact world position, rotation,
+   and scale — only the parent changes; parents with identical transforms
+   take a byte-preserving fast path. Valid targets light up while you drag;
+   moves that would push a
+   target past the game's **999-decorations-per-parent limit** are rejected —
+   over-limit targets dim immediately when the drag starts, turn red on
+   hover, and dropping shows a warning while both parents stay unchanged.
 3. Use the **Extraction** bar:
    - **Separate Selected Decorations** — extracts exactly the decorations
      selected in the table. Unselected decorations stay attached; the parent's
@@ -223,6 +239,7 @@ No build step; the only dependency is three.js, loaded from the jsDelivr CDN via
 ```sh
 node tools/test-splitter.mjs
 node tools/test-gil.mjs
+node tools/test-reparent.mjs
 ```
 
 `test-splitter.mjs` verifies, against the sample fixtures: lossless protobuf
@@ -231,6 +248,11 @@ scattered selections, parent-reference correctness, byte-identity of node
 graphs and unmoved Decoration entries, repeated splits, selective export,
 reordering, class-3 game-object files, rename and cross-model moves, and edge
 cases such as moving every entry out of a model.
+
+`test-reparent.mjs` verifies that cross-parent moves preserve world-space
+transforms in both formats (rotated/zoomed parents, multi-selection moves,
+no cumulative drift over repeated reparenting, exact undo, byte restoration
+on return moves, and reloaded files re-verifying identically).
 
 `test-gil.mjs` verifies, against the sample `.gil` fixtures: byte-for-byte
 round-trips, split correctness against game-authored standalone counterparts

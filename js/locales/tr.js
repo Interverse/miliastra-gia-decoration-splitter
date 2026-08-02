@@ -176,4 +176,6 @@ export default {
   'sel.acrossModels': '{k} modelde {n} girdi seçili',
   'gil.op.labelReorder': '{n} dekorasyonu yeniden sırala',
   'gil.op.labelRename': '{n} dekorasyonu yeniden adlandır',
+  'gil.op.labelMove': '{n} dekorasyonu taşı',
+  'gil.err.moveLimit': 'Bir üst nesne en fazla {max} dekorasyon barındırabilir — bu taşıma “{name}” nesnesini {total} dekorasyona çıkarır.',
 };
