@@ -1,12 +1,17 @@
-// GIA Splitter — interactive, user-controlled Decoration-list splitting.
-// Workflow: import a .gia → pick a model → select Decoration entries
-// (click / Ctrl / Shift) → Split selected → repeat as needed → download.
-// All splitting is byte-preserving; see js/gia-splitter.js.
+// GIA / GIL Splitter — one interactive editor for both file types.
+// .gia: import → pick a model → select Decoration entries (click / Ctrl /
+//   Shift) → Split selected → repeat as needed → download.
+// .gil: import → check parent objects → select attached decorations →
+//   Separate (selected / all from selected parents) → download.
+// The UI adapts to the loaded file type (body.mode-gia / body.mode-gil);
+// panels, viewer, toasts, dialogs and the export bar are shared.
+// All editing is byte-preserving; see js/gia-splitter.js and js/gil-splitter.js.
 // All user-facing text goes through js/i18n.js (t/tn/num + data-i18n).
 
 import { GiaSession, MAX_DECORATIONS_PER_MODEL } from './gia-splitter.js';
+import { GilSession, MAX_SCALE } from './gil-splitter.js';
 import { DecorationViewer } from './viewer3d.js';
-import { t, tn, num, LANGS, currentLang, setLanguage, initI18n, onLangChange } from './i18n.js';
+import { t, tn, num, LANGS, currentLang, setLanguage, initI18n, onLangChange, setI18nVariant } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,20 +37,65 @@ const els = {
   vFrameSel: $('v-frame-sel'), vFrameAll: $('v-frame-all'), vGrid: $('v-grid'), vAxes: $('v-axes'),
   vLabels: $('v-labels'), vSize: $('v-size'), vColorSel: $('v-color-sel'), vColorUnsel: $('v-color-unsel'),
   vHideSel: $('v-hide-sel'), vHideUnsel: $('v-hide-unsel'), vIsolate: $('v-isolate'), vShowAll: $('v-show-all'),
+  // .gil mode
+  objSort: $('obj-sort'), objSearch: $('obj-search'), objShowAll: $('obj-show-all'),
+  gilOpInfo: $('gil-op-info'),
+  btnGilUndo: $('btn-gil-undo'), btnGilRedo: $('btn-gil-redo'),
+  btnGilSplitSel: $('btn-gil-split-sel'), btnGilSplitParents: $('btn-gil-split-parents'),
+  gilOptCollision: $('gil-opt-collision'), gilOptRemoveParent: $('gil-opt-remove-parent'),
+  // shared dialogs / progress
+  confirmModal: $('confirm-modal'), cmHead: $('cm-head'), cmBody: $('cm-body'),
+  cmOk: $('cm-ok'), cmCancel: $('cm-cancel'),
+  errorModal: $('error-modal'), emBody: $('em-body'), emClose: $('em-close'),
+  progressOverlay: $('progress-overlay'), progressLabel: $('progress-label'), progressBar: $('progress-bar'),
 };
 
+// Extraction options persist between sessions; the keys predate the unified
+// editor and stay stable so saved settings survive.
+const COLLISION_PREF_KEY = 'gil-splitter-extract-collision';
+const REMOVE_PARENT_PREF_KEY = 'gil-splitter-remove-parent';
+function loadPref(key, dflt) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? dflt : v === '1';
+  } catch { return dflt; }
+}
+function savePref(key, on) {
+  try { localStorage.setItem(key, on ? '1' : '0'); } catch {}
+}
+
 const state = {
+  mode: null,         // 'gia' | 'gil' — set when a file is loaded
   sourceBytes: null,  // as loaded, for Reset
   fileName: '',
-  session: null,      // GiaSession
+  session: null,      // GiaSession (.gia mode)
   currentModel: 0,
   sel: new Set(),     // selected row indices in the current model
+  selByModel: new Map(), // model uid -> saved Set of indices (selection memory)
   anchor: null,       // shift-selection anchor
   rows: [],           // <tr> per decoration index
   exportSel: new Set(), // uids of models included in the export
-  viewer: null,       // DecorationViewer (created on first session)
+  viewer: null,       // DecorationViewer (created on first session, shared by both modes)
   viewerModel: -1,    // model the viewer currently shows (for frame-on-switch)
   history: { undo: [], redo: [] }, // rename operations
+  gil: {
+    session: null,      // GilSession (.gil mode)
+    parentSel: new Set(), // checked parent-object ids (extraction targets)
+    parentAnchor: null, // shift-range anchor in the object list
+    active: null,       // focused parent id (its decorations fill the table)
+    decoSel: new Set(), // selected decoration ids — persists across parents
+    decoAnchor: null,   // shift-range anchor in the decoration table
+    pointIds: [],       // viewer point index -> decoration id (focused parent)
+    viewerParent: null, // parent the viewer currently shows
+    showAll: false,
+    search: '',
+    sortKey: 'deco',    // object list sort
+    sortAsc: false,
+    decoSort: null,     // decoration table sort column (null = file order)
+    decoSortAsc: true,
+    collision: loadPref(COLLISION_PREF_KEY, true),
+    removeParent: loadPref(REMOVE_PARENT_PREF_KEY, false),
+  },
 };
 
 // ---------- language ----------
@@ -74,7 +124,7 @@ document.fonts?.ready.then(fitLangSelect);
 onLangChange(() => {
   els.langSelect.value = currentLang();
   fitLangSelect();
-  if (state.session) {
+  if (state.session || state.gil.session) {
     renderMeta();
     renderAll();
   }
@@ -126,23 +176,54 @@ document.addEventListener('drop', (e) => {
   if (f) loadFile(f);
 });
 
+// Route by extension; each session constructor validates the content before
+// any state is committed, so a bad file never clobbers the loaded document.
 async function loadFile(file) {
+  const isGil = /\.gil$/i.test(file.name);
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const session = new GiaSession(bytes); // validates before committing state
-    state.sourceBytes = bytes;
-    state.fileName = file.name.replace(/\.gia$/i, '');
-    startSession(session);
+    if (isGil) {
+      const session = new GilSession(bytes);
+      state.sourceBytes = bytes;
+      state.fileName = file.name.replace(/\.gil$/i, '');
+      startGilSession(session);
+    } else {
+      const session = new GiaSession(bytes);
+      state.sourceBytes = bytes;
+      state.fileName = file.name.replace(/\.gia$/i, '');
+      startSession(session);
+    }
   } catch (err) {
     console.error(err);
-    toast(errMsg(err, 'err.readFail'));
+    if (isGil) {
+      // .gil container errors are descriptive — show them in the dialog
+      showError(
+        `<p><b>${escapeHtml(t('gil.load.failTitle', { name: file.name }))}</b></p>` +
+        `<p class="e">${escapeHtml(err.message)}</p>` +
+        `<p>${escapeHtml(t('gil.load.failNote'))}</p>`
+      );
+    } else {
+      toast(errMsg(err, 'err.readFail'));
+    }
   }
 }
 
+// The loaded file type drives visibility (.gia-only/.gil-only elements) and
+// mode-dependent static labels (data-i18n-gil overrides).
+function setMode(mode) {
+  state.mode = mode;
+  document.body.classList.toggle('mode-gia', mode === 'gia');
+  document.body.classList.toggle('mode-gil', mode === 'gil');
+  setI18nVariant(mode === 'gil' ? 'gil' : null);
+}
+
 function startSession(session) {
+  setMode('gia');
+  state.gil.session = null;
   state.session = session;
   state.currentModel = 0;
   state.sel = new Set();
+  state.selByModel = new Map();
   state.anchor = null;
   state.viewerModel = -1; // force a camera re-frame for the new project
   state.history = { undo: [], redo: [] };
@@ -159,18 +240,60 @@ function startSession(session) {
   renderAll();
 }
 
+function startGilSession(session) {
+  setMode('gil');
+  state.session = null;
+  const g = state.gil;
+  g.session = session;
+  g.parentSel = new Set();
+  g.parentAnchor = null;
+  g.active = null;
+  g.decoSel = new Set();
+  g.decoAnchor = null;
+  g.pointIds = [];
+  g.viewerParent = null;
+  g.search = '';
+  els.objSearch.value = '';
+  els.objShowAll.checked = g.showAll;
+  els.objSort.value = g.sortKey;
+  els.gilOptCollision.checked = g.collision;
+  els.gilOptRemoveParent.checked = g.removeParent;
+  ensureViewer();
+
+  renderMeta();
+  els.setName.value = t('export.defaultName', { base: baseName() });
+
+  els.dropzone.classList.add('hidden');
+  els.workbench.classList.remove('hidden');
+  els.exportBar.classList.remove('hidden');
+  renderAll();
+}
+
 function baseName() {
+  if (state.mode === 'gil') return state.fileName;
   return state.session?.meta.exportName || state.fileName;
 }
 
 function renderMeta() {
-  const meta = state.session.meta;
-  els.metaName.textContent = baseName();
-  els.metaStats.textContent = [
-    tn('meta.models', meta.modelsBefore),
-    tn('meta.entries', meta.decorationEntries),
-    t('meta.engine', { v: meta.engineVersion || '?' }),
-  ].join(' · ');
+  if (state.mode === 'gil') {
+    const s = state.gil.session;
+    els.metaName.textContent = `${state.fileName}.gil`;
+    const parts = [
+      `${t('gil.objects.title')}: ${num(s.level.objects.length)}`,
+      `${t('gil.st.decos')}: ${num(s.level.decorations.length)}`,
+    ];
+    if (s.meta.levelName) parts.push(`${t('gil.st.levelName')}: ${s.meta.levelName}`);
+    if (s.meta.gameVersion) parts.push(`${t('gil.st.version')}: ${s.meta.gameVersion}`);
+    els.metaStats.textContent = parts.join(' · ');
+  } else {
+    const meta = state.session.meta;
+    els.metaName.textContent = baseName();
+    els.metaStats.textContent = [
+      tn('meta.models', meta.modelsBefore),
+      tn('meta.entries', meta.decorationEntries),
+      t('meta.engine', { v: meta.engineVersion || '?' }),
+    ].join(' · ');
+  }
   els.fileMeta.classList.remove('hidden');
 }
 
@@ -188,6 +311,7 @@ function renderModels(highlightId = null) {
       + (m.id === state.currentModel ? ' active' : '')
       + (exported ? '' : ' excluded')
       + (m.id === highlightId ? ' flash' : '');
+    row.dataset.uid = m.uid;
     row.addEventListener('click', () => selectModel(m.id));
 
     // export inclusion — independent from which model is open for viewing
@@ -259,26 +383,84 @@ function renderModels(highlightId = null) {
     frag.appendChild(row);
   }
   els.modelList.appendChild(frag);
+  updateGiaSelDots();
 }
 
+// Sidebar indicator: models that hold selected entries keep a dot, so
+// selections parked in other models stay visible while browsing.
+function updateGiaSelDots() {
+  const { total, models } = giaSelectionTotals();
+  const title = t('sel.acrossModels', { n: num(total), k: num(models) });
+  for (const row of els.modelList.querySelectorAll('.model-row')) {
+    const uid = Number(row.dataset.uid);
+    const m = state.session.models.find((x) => x.uid === uid);
+    const set = m && m.id === state.currentModel ? state.sel : state.selByModel.get(uid);
+    const has = !!set && set.size > 0;
+    let dot = row.querySelector('.sel-dot');
+    if (has && !dot) {
+      dot = document.createElement('span');
+      dot.className = 'sel-dot';
+      row.querySelector('.model-badges')?.appendChild(dot);
+    } else if (!has && dot) {
+      dot.remove();
+      dot = null;
+    }
+    if (dot) dot.title = title;
+  }
+}
+
+// Select all / none: export inclusion in .gia mode, extraction targets in .gil
 els.btnModelsAll.addEventListener('click', () => {
+  if (state.mode === 'gil') {
+    for (const o of visibleGilObjects()) if (o.eligible) state.gil.parentSel.add(o.id);
+    renderGilModels();
+    renderGilDetail();
+    renderGilOps();
+    return;
+  }
   state.exportSel = new Set(state.session.models.map((m) => m.uid));
   renderModels();
   renderExport();
 });
 els.btnModelsNone.addEventListener('click', () => {
+  if (state.mode === 'gil') {
+    state.gil.parentSel.clear();
+    renderGilModels();
+    renderGilDetail();
+    renderGilOps();
+    return;
+  }
   state.exportSel.clear();
   renderModels();
   renderExport();
 });
 
+// Switching the viewed model never discards selections: each model's
+// selection is remembered (keyed by its stable uid) and restored on return.
 function selectModel(id) {
   if (id === state.currentModel) return;
+  const prevUid = state.session.models[state.currentModel]?.uid;
+  if (prevUid !== undefined) state.selByModel.set(prevUid, new Set(state.sel));
   state.currentModel = id;
-  state.sel = new Set();
+  state.sel = new Set(state.selByModel.get(state.session.models[id]?.uid) ?? []);
   state.anchor = null;
   renderModels();
   renderDetail();
+}
+
+// Selection totals across every model (current model reads live state.sel).
+function giaSelectionTotals() {
+  let total = 0;
+  let models = 0;
+  for (const m of state.session.models) {
+    const set = m.id === state.currentModel ? state.sel : state.selByModel.get(m.uid);
+    const n = set ? set.size : 0;
+    if (n) {
+      total += n;
+      models++;
+    }
+  }
+  return { total, models };
 }
 
 // ---------- decoration table (detail) ----------
@@ -370,24 +552,23 @@ function applySearch() {
   }
 }
 
+// Toggle-based selection: a click toggles just that row — it never resets
+// the rest of the selection — and Shift+click INVERTS every row between the
+// anchor and the click (anchor excluded: its click already toggled it). So
+// toggling a row on and shift-clicking selects the whole range, toggling it
+// off and shift-clicking deselects the whole range.
 function onRowClick(i, e) {
   if (e.shiftKey && state.anchor != null) {
     const [a, b] = [Math.min(state.anchor, i), Math.max(state.anchor, i)];
-    const range = [];
-    for (let k = a; k <= b; k++) range.push(k);
-    if (e.ctrlKey || e.metaKey) range.forEach((k) => state.sel.add(k));
-    else state.sel = new Set(range);
-  } else if (e.ctrlKey || e.metaKey) {
-    toggleRow(i);
+    for (let k = a; k <= b; k++) {
+      if (k === state.anchor) continue;
+      if (state.sel.has(k)) state.sel.delete(k);
+      else state.sel.add(k);
+    }
+    syncSelection();
     return;
-  } else {
-    // plain click: if it's the only selected row, toggle it off; else select it alone
-    if (state.sel.size === 1 && state.sel.has(i)) state.sel.clear();
-    else state.sel = new Set([i]);
-    state.anchor = i;
   }
-  if (!e.shiftKey) state.anchor = i;
-  syncSelection();
+  toggleRow(i); // plain and Ctrl+click both toggle (sets the anchor)
 }
 
 function toggleRow(i) {
@@ -398,10 +579,22 @@ function toggleRow(i) {
 }
 
 els.btnSelectAll.addEventListener('click', () => {
+  if (state.mode === 'gil') {
+    const parent = effectiveGilParent();
+    if (!parent) return;
+    for (const did of parent.decorationIds) state.gil.decoSel.add(did);
+    syncGilSelection();
+    return;
+  }
   state.sel = new Set(state.rows.map((_, i) => i));
   syncSelection();
 });
 els.btnSelectNone.addEventListener('click', () => {
+  if (state.mode === 'gil') {
+    state.gil.decoSel.clear();
+    syncGilSelection();
+    return;
+  }
   state.sel.clear();
   syncSelection();
 });
@@ -423,8 +616,14 @@ function syncSelection() {
     updateViewerStats();
   }
   els.btnSplit.textContent = n ? t('split.buttonN', { n: num(n) }) : t('split.button');
+  // selections parked in other models are preserved — surface them so
+  // switching the viewed model clearly never discards work
+  const totals = giaSelectionTotals();
+  const across = totals.total > n
+    ? ` <span class="muted">· ${escapeHtml(t('sel.acrossModels', { n: num(totals.total), k: num(totals.models) }))}</span>`
+    : '';
   if (n === 0) {
-    els.splitInfo.textContent = t('split.none');
+    els.splitInfo.innerHTML = escapeHtml(t('split.none')) + across;
     els.splitInfo.classList.remove('armed');
   } else {
     const target = state.session.previewSplitName(state.currentModel);
@@ -432,9 +631,10 @@ function syncSelection() {
       n: num(n),
       total: num(state.rows.length),
       name: escapeHtml(target),
-    });
+    }) + across;
     els.splitInfo.classList.add('armed');
   }
+  updateGiaSelDots();
 }
 
 // ---------- reordering (drag-and-drop + arrow buttons) ----------
@@ -554,6 +754,7 @@ function ensureViewer() {
   if (state.viewer) return;
   state.viewer = new DecorationViewer(els.vViewport, {
     onSelect: (indices, mode) => {
+      if (state.mode === 'gil') return gilViewerSelect(indices, mode);
       let next;
       if (mode === 'replace') next = new Set(indices);
       else {
@@ -572,25 +773,38 @@ function ensureViewer() {
   });
 }
 
+// Point indices currently selected, for the viewer tools — row indices in
+// .gia mode, the focused parent's selected decorations in .gil mode.
+function viewerSelIndices() {
+  if (state.mode !== 'gil') return state.sel;
+  const g = state.gil;
+  const out = new Set();
+  g.pointIds.forEach((id, i) => { if (g.decoSel.has(id)) out.add(i); });
+  return out;
+}
+
 function updateViewerStats() {
-  const total = state.rows.length;
-  const n = state.sel.size;
-  els.vStats.textContent = `${num(n)} / ${num(total)}`;
+  const gil = state.mode === 'gil';
+  const pts = gil
+    ? state.gil.session.decorationPoints(state.gil.viewerParent ?? -1)
+    : state.session.decorationPoints(state.currentModel);
+  const sel = viewerSelIndices();
+  const n = sel.size;
+  els.vStats.textContent = `${num(n)} / ${num(pts.length)}`;
   if (n === 0) {
     els.vCoords.textContent = '';
     return;
   }
-  // coordinate readout: single point exact, multi-point centroid (raw .gia
+  // coordinate readout: single point exact, multi-point centroid (raw game
   // world coordinates, before the display mirror)
-  const pts = state.session.decorationPoints(state.currentModel);
   let x = 0, y = 0, z = 0;
-  for (const i of state.sel) { x += pts[i].x; y += pts[i].y; z += pts[i].z; }
+  for (const i of sel) { x += pts[i].x; y += pts[i].y; z += pts[i].z; }
   const f = (v) => num(v / n, { maximumFractionDigits: 2, minimumFractionDigits: 2 });
   els.vCoords.textContent = `(${f(x)}, ${f(y)}, ${f(z)})`;
 }
 
 els.vSearch.addEventListener('input', applySearch);
-els.vFrameSel.addEventListener('click', () => state.viewer?.frameSelected(state.sel));
+els.vFrameSel.addEventListener('click', () => state.viewer?.frameSelected(viewerSelIndices()));
 els.vFrameAll.addEventListener('click', () => state.viewer?.frameAll());
 els.vGrid.addEventListener('click', () => els.vGrid.classList.toggle('on', state.viewer?.toggleGrid()));
 els.vAxes.addEventListener('click', () => els.vAxes.classList.toggle('on', state.viewer?.toggleAxes()));
@@ -598,9 +812,9 @@ els.vLabels.addEventListener('change', () => state.viewer?.setLabels(els.vLabels
 els.vSize.addEventListener('input', () => state.viewer?.setPointSize(Number(els.vSize.value)));
 els.vColorSel.addEventListener('input', () => state.viewer?.setColors(els.vColorSel.value, null));
 els.vColorUnsel.addEventListener('input', () => state.viewer?.setColors(null, els.vColorUnsel.value));
-els.vHideSel.addEventListener('click', () => state.viewer?.hideSelected(state.sel));
-els.vHideUnsel.addEventListener('click', () => state.viewer?.hideUnselected(state.sel));
-els.vIsolate.addEventListener('click', () => state.viewer?.isolate(state.sel));
+els.vHideSel.addEventListener('click', () => state.viewer?.hideSelected(viewerSelIndices()));
+els.vHideUnsel.addEventListener('click', () => state.viewer?.hideUnselected(viewerSelIndices()));
+els.vIsolate.addEventListener('click', () => state.viewer?.isolate(viewerSelIndices()));
 els.vShowAll.addEventListener('click', () => state.viewer?.showAll());
 for (const btn of document.querySelectorAll('.quickview [data-view]')) {
   btn.addEventListener('click', () => state.viewer?.quickView(btn.dataset.view));
@@ -642,13 +856,14 @@ els.renamePop.addEventListener('click', (e) => e.stopPropagation());
 document.addEventListener('click', closeRenamePop);
 
 document.addEventListener('keydown', (e) => {
-  if (!state.session) return;
+  if (!state.session && !state.gil.session) return;
   const tag = e.target?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (!(e.ctrlKey || e.metaKey)) return;
   const k = e.key.toLowerCase();
   if (k === 'z' && !e.shiftKey) {
     e.preventDefault();
+    if (state.mode === 'gil') return doGilUndo();
     const op = state.history.undo.pop();
     if (!op) return;
     state.session.revertRename(op);
@@ -658,6 +873,7 @@ document.addEventListener('keydown', (e) => {
     toast(t('toast.undone'), true);
   } else if (k === 'y' || (k === 'z' && e.shiftKey)) {
     e.preventDefault();
+    if (state.mode === 'gil') return doGilRedo();
     const op = state.history.redo.pop();
     if (!op) return;
     state.session.replayRename(op);
@@ -666,6 +882,15 @@ document.addEventListener('keydown', (e) => {
     renderExport();
     toast(t('toast.redone'), true);
   }
+});
+
+// Clipboard paste: load a .gia/.gil file copied from the OS (Ctrl+V / Cmd+V).
+document.addEventListener('paste', (e) => {
+  const files = e.clipboardData ? [...e.clipboardData.files] : [];
+  const f = files.find((x) => /\.(gia|gil)$/i.test(x.name)) ?? files[0];
+  if (!f) return;
+  e.preventDefault();
+  loadFile(f);
 });
 
 // ---------- inline renaming (double-click) ----------
@@ -755,6 +980,7 @@ els.btnSplit.addEventListener('click', () => {
 // ---------- export ----------
 
 function renderExport() {
+  if (state.mode === 'gil') return renderGilExport();
   const s = state.session;
   const models = s.models;
   // drop uids that no longer exist (e.g. after Reset created a new session)
@@ -795,27 +1021,876 @@ function renderExport() {
 }
 
 els.btnReset.addEventListener('click', () => {
+  if (state.mode === 'gil') {
+    if (!state.gil.session?.changed) return;
+    startGilSession(new GilSession(state.sourceBytes));
+    toast(t('toast.discarded'), true);
+    return;
+  }
   if (!state.session?.changed) return;
   startSession(new GiaSession(state.sourceBytes));
   toast(t('toast.discarded'), true);
 });
 
-els.btnDownload.addEventListener('click', () => {
-  if (!state.session || state.exportSel.size === 0) return;
-  const fallback = t('export.defaultName', { base: state.fileName });
-  const name = (els.setName.value.trim() || fallback).replace(/[\\/:*?"<>|]/g, '_');
-  const blob = new Blob([state.session.serialize([...state.exportSel])], { type: 'application/octet-stream' });
+// shared download plumbing: bytes → named file in the user's downloads
+function downloadBytes(bytes, name) {
+  const blob = new Blob([bytes], { type: 'application/octet-stream' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `${name}.gia`;
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+const sanitizeName = (s) => s.replace(/[\\/:*?"<>|]/g, '_');
+
+els.btnDownload.addEventListener('click', () => {
+  if (state.mode === 'gil') {
+    const s = state.gil.session;
+    if (!s) return;
+    const fallback = t('export.defaultName', { base: state.fileName });
+    const name = sanitizeName(els.setName.value.trim() || fallback);
+    try {
+      downloadBytes(s.serialize(), `${name}.gil`);
+      toast(t('toast.downloaded'), true);
+    } catch (err) {
+      console.error(err);
+      showError(`<p>${escapeHtml(t('gil.serializeFail'))}</p><p class="e">${escapeHtml(err.message)}</p>`);
+    }
+    return;
+  }
+  if (!state.session || state.exportSel.size === 0) return;
+  const fallback = t('export.defaultName', { base: state.fileName });
+  const name = sanitizeName(els.setName.value.trim() || fallback);
+  downloadBytes(state.session.serialize([...state.exportSel]), `${name}.gia`);
   toast(t('toast.downloaded'), true);
 });
+
+// ================= .gil mode =================
+// The same three panels, adapted: the master list shows parent objects
+// (checkbox = extraction target, click = focus), the table shows the focused
+// parent's attached decorations (click toggles; selection is decoration-id
+// based and persists across parents while the parent stays checked), and the
+// ops bar offers the two extraction operations plus options and undo/redo.
+
+const WARNING_DISPLAY_CAP = 30;   // dialog rows before "…and {n} more"
+const PROGRESS_THRESHOLD = 400;   // decorations; smaller ops finish instantly
+const GIL_ROW_HEIGHT = 36;        // fixed .mode-gil .model-row height (virtual list)
+const VIRTUAL_THRESHOLD = 400;    // rows before the object list windows itself
+
+function formatGilIssue(issue, kind) {
+  return t(`gil.${kind === 'error' ? 'e' : 'w'}.${issue.code}`, issue.params);
+}
+
+// The decoration table shows the focused parent (viewing is independent of
+// the parent CHECKBOX selection), falling back to the most recently checked
+// parent, else nothing.
+function effectiveGilParent() {
+  const g = state.gil;
+  if (!g.session) return null;
+  const L = g.session.level;
+  if (g.active !== null) {
+    const o = L.objectById(g.active);
+    if (o && o.decorationIds.length) return o;
+  }
+  if (g.parentSel.size) return L.objectById([...g.parentSel].pop()) ?? null;
+  return null;
+}
+
+// Decoration selection is INDEPENDENT of parent selection: switching or
+// unchecking parents never discards it. Only selections that stopped
+// existing are dropped — parents removed/emptied by an operation, and
+// decorations that were extracted (or vanished through undo/redo).
+function pruneGilSelection() {
+  const g = state.gil;
+  const L = g.session.level;
+  for (const id of [...g.parentSel]) {
+    const o = L.objectById(id);
+    if (!o || !o.decorationIds.length) g.parentSel.delete(id);
+  }
+  if (g.decoSel.size) {
+    const existing = new Set(L.decorations.map((d) => d.id));
+    for (const did of [...g.decoSel]) if (!existing.has(did)) g.decoSel.delete(did);
+  }
+}
+
+// Parents that hold at least one selected decoration (for the summary line
+// and the sidebar indicator dots). Matched against the parents' decoration
+// lists — the authoritative link — not the decorations' back-references.
+function gilParentsWithSelection() {
+  const g = state.gil;
+  const out = new Set();
+  if (!g.decoSel.size) return out;
+  for (const o of g.session.level.objects) {
+    if (o.decorationIds.length && o.decorationIds.some((d) => g.decoSel.has(d))) out.add(o.id);
+  }
+  return out;
+}
+
+// ---------- object list (master) ----------
+
+function visibleGilObjects() {
+  const g = state.gil;
+  if (!g.session) return [];
+  let rows = g.session.objects({ parentsOnly: !g.showAll });
+  const q = g.search.trim().toLowerCase();
+  if (q) {
+    rows = rows.filter(
+      (o) =>
+        (o.name || '').toLowerCase().includes(q) ||
+        String(o.id).includes(q) ||
+        String(o.prefabId).includes(q)
+    );
+  }
+  const dir = g.sortAsc ? 1 : -1;
+  const key = g.sortKey;
+  rows.sort((a, b) => {
+    let r = 0;
+    if (key === 'name') r = (a.name || '').localeCompare(b.name || '');
+    else if (key === 'id') r = (a.id || 0) - (b.id || 0);
+    else if (key === 'prefab') r = (a.prefabId || 0) - (b.prefabId || 0);
+    else r = a.count - b.count;
+    if (r === 0) r = (a.id || 0) - (b.id || 0);
+    return r * dir;
+  });
+  return rows;
+}
+
+function makeGilObjRow(o) {
+  const g = state.gil;
+  const row = document.createElement('div');
+  row.className = 'model-row'
+    + (o.eligible ? '' : ' no-deco')
+    + (g.parentSel.has(o.id) ? ' checked' : '')
+    + (o.id === g.active ? ' active' : '');
+  row.dataset.objId = o.id;
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'model-export';
+  cb.checked = g.parentSel.has(o.id);
+  cb.disabled = !o.eligible;
+
+  const name = document.createElement('span');
+  name.className = 'model-name';
+  name.textContent = o.name || t('model.unnamed');
+  name.title = `${o.name ?? ''} · ${o.prefabId ?? ''}`;
+
+  const badges = document.createElement('span');
+  badges.className = 'model-badges';
+  const oid = document.createElement('span');
+  oid.className = 'model-id';
+  oid.textContent = o.id ?? '?';
+  const count = document.createElement('span');
+  count.className = 'model-count';
+  count.textContent = num(o.count);
+  count.title = tn('model.countTip', o.count);
+  badges.append(oid, count);
+  if (gilRenderCtx.selParents.has(o.id)) {
+    const dot = document.createElement('span');
+    dot.className = 'sel-dot';
+    dot.title = t('gil.sum.decosSel', {
+      n: num(state.gil.decoSel.size),
+      k: num(gilRenderCtx.selParents.size),
+    });
+    badges.appendChild(dot);
+  }
+
+  row.append(cb, name, badges);
+  if (o.eligible) {
+    row.addEventListener('click', (e) => {
+      if (e.target !== cb) onGilParentClick(o.id, e);
+    });
+    // the checkbox always plain-toggles, whatever the modifier keys
+    cb.addEventListener('change', () => {
+      if (g.parentSel.has(o.id)) g.parentSel.delete(o.id);
+      else g.parentSel.add(o.id);
+      g.parentAnchor = o.id;
+      g.active = o.id;
+      renderGilModels();
+      renderGilDetail();
+      renderGilOps();
+    });
+  }
+  return row;
+}
+
+// Explorer-style selection in the object list: click selects one, Ctrl+click
+// toggles, Shift+click ranges over the list's CURRENT visible order (data-
+// driven, so it works across the virtualized window). Mirrors the .gia
+// decoration table's semantics, including plain-click clearing a lone
+// selected row.
+function onGilParentClick(id, e) {
+  const g = state.gil;
+  if (e.shiftKey && g.parentAnchor !== null) {
+    const order = visibleGilObjects().filter((o) => o.eligible).map((o) => o.id);
+    const a = order.indexOf(g.parentAnchor);
+    const b = order.indexOf(id);
+    if (a !== -1 && b !== -1) {
+      const range = order.slice(Math.min(a, b), Math.max(a, b) + 1);
+      if (e.ctrlKey || e.metaKey) range.forEach((x) => g.parentSel.add(x));
+      else g.parentSel = new Set(range);
+    }
+  } else if (e.ctrlKey || e.metaKey) {
+    if (g.parentSel.has(id)) g.parentSel.delete(id);
+    else g.parentSel.add(id);
+  } else {
+    if (g.parentSel.size === 1 && g.parentSel.has(id)) g.parentSel.clear();
+    else g.parentSel = new Set([id]);
+  }
+  if (!e.shiftKey) g.parentAnchor = id;
+  g.active = id;
+  renderGilModels();
+  renderGilDetail();
+  renderGilOps();
+}
+
+// Long object lists ("show all" on big levels) render as a virtual window;
+// short lists render fully. Row height is fixed by CSS in .gil mode.
+function renderGilRows(container, rows) {
+  container.textContent = '';
+  container.onscroll = null;
+  if (rows.length <= VIRTUAL_THRESHOLD) {
+    const frag = document.createDocumentFragment();
+    for (const r of rows) frag.appendChild(makeGilObjRow(r));
+    container.appendChild(frag);
+    return;
+  }
+  const pad = 8; // rows of overscan
+  const draw = () => {
+    const top = container.scrollTop;
+    const h = container.clientHeight;
+    const first = Math.max(0, Math.floor(top / GIL_ROW_HEIGHT) - pad);
+    const last = Math.min(rows.length, Math.ceil((top + h) / GIL_ROW_HEIGHT) + pad);
+    container.textContent = '';
+    const spacerTop = document.createElement('div');
+    spacerTop.style.height = `${first * GIL_ROW_HEIGHT}px`;
+    container.appendChild(spacerTop);
+    const frag = document.createDocumentFragment();
+    for (let i = first; i < last; i++) frag.appendChild(makeGilObjRow(rows[i]));
+    container.appendChild(frag);
+    const spacerBottom = document.createElement('div');
+    spacerBottom.style.height = `${(rows.length - last) * GIL_ROW_HEIGHT}px`;
+    container.appendChild(spacerBottom);
+  };
+  let raf = 0;
+  container.onscroll = () => {
+    if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); });
+  };
+  draw();
+}
+
+// Per-render context for makeGilObjRow (also used by the virtual list's
+// scroll redraws): which parents currently hold selected decorations.
+const gilRenderCtx = { selParents: new Set() };
+
+function renderGilModels() {
+  const g = state.gil;
+  gilRenderCtx.selParents = gilParentsWithSelection();
+  const rows = visibleGilObjects();
+  els.modelCount.textContent = num(rows.length);
+  if (!rows.length) {
+    els.modelList.textContent = '';
+    els.modelList.onscroll = null;
+    const msg = document.createElement('div');
+    msg.className = 'list-msg';
+    if (g.session.parentCount()) {
+      msg.textContent = t('gil.empty.filter');
+    } else {
+      msg.append(t('gil.empty.noParents'), document.createElement('br'));
+      const sub = document.createElement('span');
+      sub.className = 'sub';
+      sub.textContent = t('gil.empty.noParentsSub');
+      msg.appendChild(sub);
+    }
+    els.modelList.appendChild(msg);
+    return;
+  }
+  renderGilRows(els.modelList, rows);
+}
+
+// ---------- decoration table (detail) ----------
+
+function renderGilDetail() {
+  const g = state.gil;
+  const parent = effectiveGilParent();
+
+  els.detailName.ondblclick = null;
+  els.detailName.title = '';
+  els.decBody.textContent = '';
+  state.rows = [];
+
+  if (!parent) {
+    els.detailName.textContent = t('gil.deco.placeholder');
+    els.detailCount.textContent = '';
+    updateGilViewerData(null);
+    syncGilSelection();
+    return;
+  }
+
+  if (parent.id !== g.viewerParent) g.decoAnchor = null; // ranges never span a parent switch
+
+  els.detailName.textContent = parent.name || t('model.unnamed');
+  let rows = g.session.decorations(parent.id);
+  els.detailCount.textContent = tn('detail.entries', rows.length);
+
+  if (g.decoSort) {
+    const dir = g.decoSortAsc ? 1 : -1;
+    const key = g.decoSort;
+    rows = rows.slice().sort((a, b) => {
+      let r = 0;
+      if (key === 'name') r = (a.name || '').localeCompare(b.name || '');
+      else if (key === 'prefab') r = (a.prefabId || 0) - (b.prefabId || 0);
+      else if (key === 'coll') r = (a.collision ? 1 : 0) - (b.collision ? 1 : 0);
+      else r = (a.id || 0) - (b.id || 0);
+      if (r === 0) r = (a.id || 0) - (b.id || 0);
+      return r * dir;
+    });
+  }
+  syncGilSortHeaders();
+
+  const frag = document.createDocumentFragment();
+  for (const d of rows) {
+    const tr = document.createElement('tr');
+    tr.dataset.index = d.index; // viewer point index (file order)
+    tr.dataset.decoId = d.id;
+
+    const tdCheck = document.createElement('td');
+    tdCheck.className = 'col-check';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.tabIndex = -1;
+    cb.addEventListener('click', (e) => { e.stopPropagation(); toggleGilDeco(d.id); });
+    tdCheck.appendChild(cb);
+
+    const tdIdx = document.createElement('td');
+    tdIdx.className = 'num muted';
+    tdIdx.textContent = d.index; // position identifier — never locale-formatted
+
+    const tdName = document.createElement('td');
+    tdName.className = 'dec-name';
+    if (d.name) tdName.textContent = d.name;
+    else { tdName.textContent = '—'; tdName.classList.add('muted'); }
+
+    const tdId = document.createElement('td');
+    tdId.className = 'num dec-id';
+    tdId.textContent = d.id ?? '—';
+
+    const tdPrefab = document.createElement('td');
+    tdPrefab.className = 'num dec-id';
+    tdPrefab.textContent = d.prefabId ?? '—';
+    tdPrefab.title = t('gil.col.prefabTip');
+
+    const tdColl = document.createElement('td');
+    tdColl.className = d.collision ? 'coll-on' : 'coll-off';
+    tdColl.textContent = d.collision ? t('gil.collision.on') : t('gil.collision.off');
+
+    tr.append(tdCheck, tdIdx, tdName, tdId, tdPrefab, tdColl);
+    tr.addEventListener('click', (e) => onGilDecoClick(d.id, e));
+    state.rows.push(tr);
+    frag.appendChild(tr);
+  }
+  els.decBody.appendChild(frag);
+  updateGilViewerData(parent);
+  syncGilSelection();
+}
+
+function syncGilSortHeaders() {
+  const g = state.gil;
+  for (const th of document.querySelectorAll('#dec-table th[data-sort]')) {
+    th.classList.toggle('sort-asc', g.decoSort === th.dataset.sort && g.decoSortAsc);
+    th.classList.toggle('sort-desc', g.decoSort === th.dataset.sort && !g.decoSortAsc);
+  }
+}
+
+// checkbox path: always a plain toggle
+function toggleGilDeco(id) {
+  const g = state.gil;
+  if (g.decoSel.has(id)) g.decoSel.delete(id);
+  else g.decoSel.add(id);
+  g.decoAnchor = id;
+  syncGilSelection();
+}
+
+// Toggle-based selection, matching the .gia table: a click toggles just
+// that row — it never resets the rest of the selection (which may span
+// other parent objects) — and Shift+click INVERTS every row between the
+// anchor and the click over the table's current (possibly sorted) order
+// (anchor excluded: its click already toggled it). Toggle on + shift-click
+// selects the range; toggle off + shift-click deselects it.
+function onGilDecoClick(id, e) {
+  const g = state.gil;
+  if (e.shiftKey && g.decoAnchor !== null) {
+    const order = state.rows.map((tr) => Number(tr.dataset.decoId));
+    const a = order.indexOf(g.decoAnchor);
+    const b = order.indexOf(id);
+    if (a !== -1 && b !== -1) {
+      for (const x of order.slice(Math.min(a, b), Math.max(a, b) + 1)) {
+        if (x === g.decoAnchor) continue;
+        if (g.decoSel.has(x)) g.decoSel.delete(x);
+        else g.decoSel.add(x);
+      }
+    }
+    syncGilSelection();
+    return;
+  }
+  toggleGilDeco(id); // plain and Ctrl+click both toggle (sets the anchor)
+}
+
+// Reflect the id-based selection into row classes, checkboxes, the viewer,
+// the sidebar indicator dots and the ops bar (no rebuild).
+function syncGilSelection() {
+  const g = state.gil;
+  for (const tr of state.rows) {
+    const sel = g.decoSel.has(Number(tr.dataset.decoId));
+    tr.classList.toggle('selected', sel);
+    tr.querySelector('input').checked = sel;
+  }
+  if (state.viewer) {
+    state.viewer.setSelection(viewerSelIndices());
+    updateViewerStats();
+  }
+  updateGilSelDots();
+  renderGilOps();
+}
+
+// Keep the sidebar's "holds selected decorations" dots current without
+// rebuilding the (possibly virtualized) list.
+function updateGilSelDots() {
+  gilRenderCtx.selParents = gilParentsWithSelection();
+  const title = t('gil.sum.decosSel', {
+    n: num(state.gil.decoSel.size),
+    k: num(gilRenderCtx.selParents.size),
+  });
+  for (const row of els.modelList.querySelectorAll('.model-row')) {
+    const has = gilRenderCtx.selParents.has(Number(row.dataset.objId));
+    let dot = row.querySelector('.sel-dot');
+    if (has && !dot) {
+      dot = document.createElement('span');
+      dot.className = 'sel-dot';
+      row.querySelector('.model-badges')?.appendChild(dot);
+    } else if (!has && dot) {
+      dot.remove();
+      dot = null;
+    }
+    if (dot) dot.title = title;
+  }
+}
+
+// push the focused parent's decoration points into the viewer; the camera
+// re-frames only when the viewed parent actually changed
+function updateGilViewerData(parent) {
+  if (!state.viewer) return;
+  const g = state.gil;
+  const id = parent ? parent.id : null;
+  const frame = g.viewerParent !== id;
+  g.viewerParent = id;
+  const points = id !== null ? g.session.decorationPoints(id) : [];
+  g.pointIds = points.map((p) => p.guid);
+  state.viewer.setData(points, { frame });
+  applySearch();
+}
+
+// viewer picks map through the focused parent's points; 'replace' replaces
+// the whole selection, matching the explorer-style click semantics of the
+// table (cross-parent selections accumulate via Ctrl / checkboxes)
+function gilViewerSelect(indices, mode) {
+  const g = state.gil;
+  const ids = indices.map((i) => g.pointIds[i]).filter((x) => x !== undefined);
+  if (mode === 'replace') {
+    g.decoSel = new Set(ids);
+  } else if (mode === 'add') {
+    ids.forEach((d) => g.decoSel.add(d));
+  } else if (mode === 'subtract') {
+    ids.forEach((d) => g.decoSel.delete(d));
+  } else {
+    ids.forEach((d) => (g.decoSel.has(d) ? g.decoSel.delete(d) : g.decoSel.add(d)));
+  }
+  g.decoAnchor = ids.length ? ids[0] : null;
+  syncGilSelection();
+  if (indices.length === 1) {
+    state.rows.find((tr) => Number(tr.dataset.index) === indices[0])
+      ?.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+// ---------- ops bar (buttons, options, summary) ----------
+
+function renderGilOps() {
+  const g = state.gil;
+  if (!g.session) return;
+  pruneGilSelection();
+  const L = g.session.level;
+  const parents = [...g.parentSel].map((id) => L.objectById(id)).filter(Boolean);
+  const totalDecos = parents.reduce((a, o) => a + o.decorationIds.length, 0);
+  const nSel = g.decoSel.size;
+  const selParents = gilParentsWithSelection();
+
+  // "Separate Selected" follows the decoration selection alone — it extracts
+  // every selected decoration wherever it lives, checked parents or not.
+  els.btnGilSplitSel.disabled = nSel === 0;
+  els.btnGilSplitSel.title = nSel === 0
+    ? t('gil.tip.needDecoSel')
+    : t('gil.sum.selDecos', { n: num(nSel) });
+  els.btnGilSplitParents.disabled = parents.length === 0;
+  els.btnGilSplitParents.title = parents.length === 0
+    ? t('gil.tip.needParentSel')
+    : t('gil.sum.parents', { n: num(totalDecos), k: num(parents.length) });
+
+  // global selection summary — makes clear that switching the viewed parent
+  // never discards selections ("27 decorations selected across 4 parents")
+  const lines = [];
+  if (parents.length) lines.push(t('gil.sum.parentsSel', { n: num(parents.length) }));
+  if (nSel) lines.push(t('gil.sum.decosSel', { n: num(nSel), k: num(selParents.size) }));
+  els.gilOpInfo.textContent = lines.join('\n');
+  els.gilOpInfo.classList.toggle('armed', lines.length > 0);
+
+  els.btnGilUndo.disabled = !g.session.canUndo;
+  els.btnGilRedo.disabled = !g.session.canRedo;
+}
+
+// ---------- extraction operations ----------
+
+let splitting = false;
+
+// mode 'decos': exactly the decorations selected in the table, wherever they
+// live — the selection spans parents and survives viewing/checkbox changes.
+// mode 'parents': every decoration of the checked parent objects.
+async function doGilSplit(mode) {
+  const g = state.gil;
+  if (!g.session || splitting) return;
+  pruneGilSelection();
+  const onlyDecoIds = mode === 'decos' ? new Set(g.decoSel) : null;
+  if (mode === 'decos' ? !onlyDecoIds.size : !g.parentSel.size) return;
+
+  const label = mode === 'decos'
+    ? { key: 'gil.op.labelSelDecos', params: { n: onlyDecoIds.size } }
+    : { key: 'gil.op.label', params: { n: g.parentSel.size } };
+
+  let planned;
+  splitting = true;
+  try {
+    const large = (onlyDecoIds ? onlyDecoIds.size : [...g.parentSel].reduce((a, id) => {
+      const o = g.session.level.objectById(id);
+      return a + (o ? o.decorationIds.length : 0);
+    }, 0)) > PROGRESS_THRESHOLD;
+    if (large) {
+      showProgress(t('gil.progress.analyzing'));
+      await nextPaint();
+    }
+    try {
+      planned = g.session.planExtraction({
+        mode,
+        selectedParentIds: g.parentSel,
+        onlyDecoIds,
+        removeParent: g.removeParent,
+      });
+    } catch (err) {
+      console.error(err);
+      showError(`<p>${escapeHtml(t('gil.analyzeFail'))}</p><p class="e">${escapeHtml(err.message)}</p>`);
+      return;
+    }
+    const { plan } = planned;
+    if (plan.errors.length) {
+      showError(
+        `<p>${escapeHtml(t('gil.valFailed'))}</p><ul>` +
+        plan.errors.slice(0, WARNING_DISPLAY_CAP)
+          .map((e) => `<li class="e">${escapeHtml(formatGilIssue(e, 'error'))}</li>`).join('') +
+        (plan.errors.length > WARNING_DISPLAY_CAP
+          ? `<li class="e">${escapeHtml(t('gil.wMore', { n: plan.errors.length - WARNING_DISPLAY_CAP }))}</li>`
+          : '') +
+        '</ul>'
+      );
+      return;
+    }
+    if (!plan.entries.length) {
+      showError(`<p>${escapeHtml(t('gil.noExtractable'))}</p>`);
+      return;
+    }
+  } finally {
+    hideProgress();
+    splitting = false;
+  }
+
+  const { plan, removal } = planned;
+  const allWarnings = [...plan.warnings, ...removal.warnings];
+  const run = () => runGilSplit(mode, plan, removal, label);
+
+  if (allWarnings.length) {
+    // zoom-limit warnings get their own grouped section; everything is
+    // non-destructive until the user confirms
+    const scaleWs = allWarnings.filter((w) => w.code === 'scaleExceeds');
+    const otherWs = allWarnings.filter((w) => w.code !== 'scaleExceeds');
+    const listHtml = (ws) => {
+      let html = ws.slice(0, WARNING_DISPLAY_CAP)
+        .map((w) => `<li class="w">${escapeHtml(formatGilIssue(w, 'warning'))}</li>`).join('');
+      if (ws.length > WARNING_DISPLAY_CAP) {
+        html += `<li class="w">${escapeHtml(t('gil.wMore', { n: ws.length - WARNING_DISPLAY_CAP }))}</li>`;
+      }
+      return html;
+    };
+    let body = `<p>${escapeHtml(t('gil.confirm.intro', {
+      count: num(plan.entries.length),
+      parents: num(new Set(plan.entries.map((e) => e.parent.id)).size),
+    }))}</p>`;
+    if (scaleWs.length) {
+      body += `<p class="w">${escapeHtml(t('gil.dlg.scaleIntro', { max: MAX_SCALE }))}</p>`
+        + `<ul>${listHtml(scaleWs)}</ul>`
+        + `<p class="w">${escapeHtml(t('gil.scaleNote'))}</p>`;
+    }
+    if (otherWs.length) body += `<ul>${listHtml(otherWs)}</ul>`;
+    body += `<p>${escapeHtml(t('gil.confirm.outro'))}</p>`;
+    confirmDialog(scaleWs.length ? t('gil.dlg.scale') : t('gil.dlg.review'), body, run);
+  } else {
+    run();
+  }
+}
+
+async function runGilSplit(mode, plan, removal, label) {
+  const g = state.gil;
+  if (splitting) return;
+  splitting = true;
+  try {
+    const large = plan.entries.length > PROGRESS_THRESHOLD;
+    if (large) {
+      showProgress(t('gil.progress.label', { done: 0, total: num(plan.entries.length) }));
+      await nextPaint();
+    }
+    const summary = await g.session.applyExtraction({
+      plan,
+      removal,
+      label,
+      collision: g.collision,
+      removeParent: g.removeParent,
+      onProgress: large ? updateProgress : null,
+    });
+    g.parentSel.clear();
+    g.decoSel.clear();
+    toast(
+      t(mode === 'decos' ? 'gil.toast.extractedSel' : 'gil.toast.extractedAll', {
+        decos: num(summary.removedDecorations),
+        parents: num(summary.parents),
+      }),
+      true
+    );
+    renderAll();
+  } catch (err) {
+    console.error(err);
+    showError(
+      `<p>${escapeHtml(t('gil.opFailed'))}</p><p class="e">${escapeHtml(err.message)}</p>` +
+      `<p>${escapeHtml(t('gil.opFailedNote'))}</p>`
+    );
+  } finally {
+    hideProgress();
+    splitting = false;
+  }
+}
+
+function doGilUndo() {
+  const label = state.gil.session?.undo();
+  if (!label) return;
+  toast(t('gil.toast.undid', { label: t(label.key, label.params) }), true);
+  renderAll();
+}
+
+function doGilRedo() {
+  const label = state.gil.session?.redo();
+  if (!label) return;
+  toast(t('gil.toast.redid', { label: t(label.key, label.params) }), true);
+  renderAll();
+}
+
+// ---------- export bar (.gil) ----------
+
+function renderGilExport() {
+  const s = state.gil.session;
+  const now = s.level.objects.length;
+  els.exModels.innerHTML = s.changed
+    ? `${num(s.meta.objectsBefore)}<span class="arrow">→</span>${num(now)}`
+    : num(now);
+  els.exSplits.textContent = num(s.edits);
+  els.exSize.textContent = fmtBytes(s.serialize().length);
+  els.btnDownload.disabled = false;
+  els.btnDownload.textContent = s.changed
+    ? t('gil.export.download')
+    : t('gil.export.downloadUnchanged');
+  els.btnReset.disabled = !s.changed;
+}
+
+// ---------- shared dialogs & progress overlay ----------
+
+function showError(html) {
+  els.emBody.innerHTML = html;
+  els.errorModal.showModal();
+}
+els.emClose.addEventListener('click', () => els.errorModal.close());
+
+function confirmDialog(title, html, onOk) {
+  els.cmHead.textContent = title;
+  els.cmBody.innerHTML = html;
+  const done = (accepted) => {
+    els.confirmModal.close();
+    els.cmOk.onclick = els.cmCancel.onclick = null;
+    if (accepted) onOk();
+  };
+  els.cmOk.onclick = () => done(true);
+  els.cmCancel.onclick = () => done(false);
+  els.confirmModal.showModal();
+}
+
+function showProgress(label) {
+  els.progressLabel.textContent = label;
+  els.progressBar.style.width = '0%';
+  els.progressOverlay.classList.remove('hidden');
+}
+function updateProgress(done, total) {
+  els.progressLabel.textContent = t('gil.progress.label', { done: num(done), total: num(total) });
+  els.progressBar.style.width = `${((done / total) * 100).toFixed(1)}%`;
+}
+function hideProgress() {
+  els.progressOverlay.classList.add('hidden');
+}
+// wait for a paint so the progress overlay is visible before heavy work; the
+// timeout fallback keeps operations moving when the tab is hidden (rAF is
+// suspended in background tabs)
+const nextPaint = () => new Promise((r) => {
+  requestAnimationFrame(() => setTimeout(r, 0));
+  setTimeout(r, 150);
+});
+
+// ---------- .gil control wiring ----------
+
+els.objSearch.addEventListener('input', () => {
+  state.gil.search = els.objSearch.value;
+  renderGilModels();
+});
+els.objShowAll.addEventListener('change', () => {
+  state.gil.showAll = els.objShowAll.checked;
+  renderGilModels();
+});
+els.objSort.addEventListener('change', () => {
+  state.gil.sortKey = els.objSort.value;
+  state.gil.sortAsc = els.objSort.value !== 'deco'; // counts default to descending
+  renderGilModels();
+});
+
+for (const th of document.querySelectorAll('#dec-table th[data-sort]')) {
+  th.addEventListener('click', () => {
+    if (state.mode !== 'gil') return;
+    const g = state.gil;
+    const key = th.dataset.sort;
+    if (g.decoSort === key) {
+      if (g.decoSortAsc) g.decoSortAsc = false;
+      else { g.decoSort = null; g.decoSortAsc = true; } // third click: file order
+    } else {
+      g.decoSort = key;
+      g.decoSortAsc = true;
+    }
+    renderGilDetail();
+  });
+}
+
+els.btnGilSplitSel.addEventListener('click', () => doGilSplit('decos'));
+els.btnGilSplitParents.addEventListener('click', () => doGilSplit('parents'));
+els.btnGilUndo.addEventListener('click', doGilUndo);
+els.btnGilRedo.addEventListener('click', doGilRedo);
+
+els.gilOptCollision.addEventListener('change', () => {
+  state.gil.collision = els.gilOptCollision.checked;
+  savePref(COLLISION_PREF_KEY, state.gil.collision);
+});
+els.gilOptRemoveParent.addEventListener('change', () => {
+  state.gil.removeParent = els.gilOptRemoveParent.checked;
+  savePref(REMOVE_PARENT_PREF_KEY, state.gil.removeParent);
+});
+
+// ---------- resizable panels ----------
+// Drag the dividers to resize the object/model list and the 3D viewer (the
+// decoration table flexes in between). Widths persist across sessions;
+// double-clicking a divider restores that panel's default (CSS-driven) size.
+
+const PANEL_W_KEYS = { models: 'splitter-ui-models-w', viewer: 'splitter-ui-viewer-w' };
+function loadNumPref(key) {
+  try {
+    const v = Number(localStorage.getItem(key));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch { return null; }
+}
+function saveNumPref(key, v) {
+  try {
+    if (v === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, String(Math.round(v)));
+  } catch {}
+}
+
+function initPanelResize() {
+  const panels = {
+    models: {
+      el: document.getElementById('model-panel'),
+      min: 220,
+      max: () => window.innerWidth * 0.4,
+      apply(w) { this.el.style.width = `${w}px`; this.el.style.minWidth = `${w}px`; },
+      clear() { this.el.style.width = ''; this.el.style.minWidth = ''; },
+    },
+    viewer: {
+      el: document.getElementById('viewer-panel'),
+      min: 260,
+      max: () => window.innerWidth * 0.55,
+      // the viewer normally flex-grows; a user-chosen width pins it
+      apply(w) { this.el.style.flex = `0 0 ${w}px`; },
+      clear() { this.el.style.flex = ''; },
+    },
+  };
+  for (const [name, p] of Object.entries(panels)) {
+    const saved = loadNumPref(PANEL_W_KEYS[name]);
+    if (saved !== null) p.apply(Math.min(p.max(), Math.max(p.min, saved)));
+  }
+  for (const split of document.querySelectorAll('.vsplit')) {
+    const p = panels[split.dataset.panel];
+    if (!p) continue;
+    let startX = 0;
+    let startW = 0;
+    split.addEventListener('pointerdown', (e) => {
+      startX = e.clientX;
+      startW = p.el.getBoundingClientRect().width;
+      split.classList.add('dragging');
+      split.setPointerCapture(e.pointerId);
+    });
+    split.addEventListener('pointermove', (e) => {
+      if (!split.classList.contains('dragging')) return;
+      // the models divider sits on the panel's right edge, the viewer divider
+      // on its left — dragging outward grows the respective panel
+      const delta = split.dataset.panel === 'models' ? e.clientX - startX : startX - e.clientX;
+      p.apply(Math.min(p.max(), Math.max(p.min, startW + delta)));
+      state.viewer?.resize();
+    });
+    const end = (e) => {
+      if (!split.classList.contains('dragging')) return;
+      split.classList.remove('dragging');
+      if (split.hasPointerCapture?.(e.pointerId)) split.releasePointerCapture(e.pointerId);
+      saveNumPref(PANEL_W_KEYS[split.dataset.panel], p.el.getBoundingClientRect().width);
+    };
+    split.addEventListener('pointerup', end);
+    split.addEventListener('pointercancel', end);
+    split.addEventListener('dblclick', () => {
+      p.clear();
+      saveNumPref(PANEL_W_KEYS[split.dataset.panel], null);
+      state.viewer?.resize();
+    });
+  }
+}
+initPanelResize();
 
 // ---------- misc ----------
 
 function renderAll() {
+  if (state.mode === 'gil') {
+    renderMeta(); // object/decoration counts change with every operation
+    renderGilModels();
+    renderGilDetail(); // calls syncGilSelection → renderGilOps
+    renderExport();
+    return;
+  }
   renderModels();
   renderDetail();
   renderExport();

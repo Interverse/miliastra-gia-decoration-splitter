@@ -25,6 +25,20 @@ const AXIS_VIEWS = {
 
 const LABEL_CAP = 600; // labels drawn per pass (nearest first)
 
+// Grid styling, shared by the initial grid and every _fitHelpers rebuild.
+// Tuned to stand out clearly against the near-black background (0x0b0d12)
+// while staying below the points and axes in visual weight.
+const GRID_CENTER_COLOR = 0x5a6580; // the two center lines (origin cross)
+const GRID_LINE_COLOR = 0x3a455c;
+const GRID_OPACITY = 0.85;
+
+function makeGrid(size, divisions) {
+  const grid = new THREE.GridHelper(size, divisions, GRID_CENTER_COLOR, GRID_LINE_COLOR);
+  grid.material.transparent = true;
+  grid.material.opacity = GRID_OPACITY;
+  return grid;
+}
+
 function circleSprite() {
   const c = document.createElement('canvas');
   c.width = c.height = 64;
@@ -68,9 +82,7 @@ export class DecorationViewer {
     this.controls.mouseButtons = { LEFT: -1, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
     this.controls.addEventListener('change', () => { this.labelsDirty = true; });
 
-    this.grid = new THREE.GridHelper(10, 10, 0x2a3040, 0x1a1f2b);
-    this.grid.material.transparent = true;
-    this.grid.material.opacity = 0.55;
+    this.grid = makeGrid(10, 10);
     this.scene.add(this.grid);
     // the scene displays game coordinates with X mirrored, so every axis
     // indicator flips its X arm to point toward game +X (display −X);
@@ -267,18 +279,17 @@ export class DecorationViewer {
 
   _fitHelpers() {
     if (!this.data.length) return;
-    let minY = Infinity, maxR = 0.5;
+    let maxR = 0.5;
     for (let i = 0; i < this.data.length; i++) {
-      minY = Math.min(minY, this.displayPos[i * 3 + 1]);
       maxR = Math.max(maxR, Math.abs(this.displayPos[i * 3]), Math.abs(this.displayPos[i * 3 + 2]));
     }
     this.scene.remove(this.grid);
     const size = Math.ceil(maxR * 2.4) || 10;
     const wasVisible = this.grid.visible;
-    this.grid = new THREE.GridHelper(size, Math.min(size * 2, 40), 0x2a3040, 0x1a1f2b);
-    this.grid.material.transparent = true;
-    this.grid.material.opacity = 0.55;
-    this.grid.position.y = Number.isFinite(minY) ? minY : 0;
+    this.grid = makeGrid(size, Math.min(size * 2, 40));
+    // the grid stays centered at the world origin (y = 0): its center lines
+    // coincide exactly with the axis indicator's X/Z arms, so the axes, grid,
+    // and object coordinates all share one origin and orientation
     this.grid.visible = wasVisible;
     this.scene.add(this.grid);
     const axScale = Math.max(size / 8, 0.5);

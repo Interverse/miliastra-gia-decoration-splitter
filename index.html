@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GIA Splitter</title>
-  <meta name="description" content="Interactive .gia splitting utility: inspect each model's Decoration entries, select any subset, and move it into a new model. Runs entirely in your browser.">
+  <title>GIA / GIL Splitter</title>
+  <meta name="description" content="Interactive .gia and .gil splitting utility: split a .gia model's Decoration entries into new models, or extract a .gil level's attached decorations into standalone world objects. Runs entirely in your browser.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>✂️</text></svg>">
   <link rel="stylesheet" href="css/style.css">
   <script type="importmap">
@@ -21,7 +21,7 @@
     <header id="topbar">
       <div class="brand">
         <div class="brand-mark">✂</div>
-        <div class="brand-text">GIA<span>Splitter</span></div>
+        <div class="brand-text">GIA·GIL<span>Splitter</span></div>
         <div class="brand-tag" data-i18n="brand.tag"></div>
       </div>
       <div id="file-meta" class="file-meta hidden">
@@ -34,7 +34,7 @@
           <select id="lang-select" aria-label="Language"></select>
         </div>
         <button id="btn-open" class="btn ghost" data-i18n="topbar.open"></button>
-        <input type="file" id="file-input" accept=".gia" hidden>
+        <input type="file" id="file-input" accept=".gia,.gil" hidden>
       </div>
     </header>
 
@@ -43,10 +43,14 @@
       <div id="dropzone">
         <div class="drop-card">
           <div class="drop-icon">✂</div>
-          <h1>GIA Splitter</h1>
-          <p><span data-i18n="hero.lead"></span> <strong data-i18n="hero.preserve"></strong></p>
+          <h1>GIA / GIL Splitter</h1>
+          <p class="hero-formats">
+            <span class="fmt-line"><span class="fmt-tag">.gia</span> <span data-i18n="hero.lead"></span></span>
+            <span class="fmt-line"><span class="fmt-tag">.gil</span> <span data-i18n="hero.lead2"></span></span>
+          </p>
+          <p><strong data-i18n="hero.preserve"></strong></p>
           <button id="btn-open-hero" class="btn primary big" data-i18n="hero.choose"></button>
-          <p class="hint"><span data-i18n="hero.drop1"></span><br><span data-i18n="hero.drop2"></span></p>
+          <p class="hint"><span data-i18n="hero.drop1"></span><br><span data-i18n="hero.paste"></span><br><span data-i18n="hero.drop2"></span></p>
         </div>
       </div>
 
@@ -54,17 +58,29 @@
 
         <aside id="model-panel">
           <div class="panel-head">
-            <h2 data-i18n="models.title"></h2>
+            <h2 data-i18n="models.title" data-i18n-gil="gil.objects.title"></h2>
             <span id="model-count" class="pill"></span>
           </div>
           <div class="model-toolbar">
             <button id="btn-models-all" class="btn tiny" data-i18n="models.selectAll"></button>
             <button id="btn-models-none" class="btn tiny" data-i18n="models.deselectAll"></button>
-            <span id="export-count" class="export-count"></span>
+            <span id="export-count" class="export-count gia-only"></span>
+            <select id="obj-sort" class="v-select gil-only">
+              <option value="deco" data-i18n="gil.sort.deco"></option>
+              <option value="name" data-i18n="gil.sort.name"></option>
+              <option value="id" data-i18n="gil.sort.id"></option>
+              <option value="prefab" data-i18n="gil.sort.prefab"></option>
+            </select>
+          </div>
+          <div class="model-toolbar gil-only">
+            <input type="search" id="obj-search" data-i18n-placeholder="gil.search" autocomplete="off">
+            <label class="opt-label"><input type="checkbox" id="obj-show-all"> <span data-i18n="gil.showAll"></span></label>
           </div>
           <div id="model-list"></div>
-          <p class="hint panel-hint" data-i18n="models.hint"></p>
+          <p class="hint panel-hint gia-only" data-i18n="models.hint"></p>
         </aside>
+
+        <div class="vsplit" data-panel="models"></div>
 
         <section id="detail-panel">
           <div id="detail-head">
@@ -75,31 +91,59 @@
             <div class="detail-actions">
               <button id="btn-select-all" class="btn tiny" data-i18n="detail.selectAll"></button>
               <button id="btn-select-none" class="btn tiny" data-i18n="detail.clear"></button>
-              <button id="btn-move-up" class="btn tiny move" data-i18n-title="reorder.up" disabled>▲</button>
-              <button id="btn-move-down" class="btn tiny move" data-i18n-title="reorder.down" disabled>▼</button>
-              <button id="btn-rename-sel" class="btn tiny" data-i18n="rename.selected" disabled></button>
+              <button id="btn-move-up" class="btn tiny move gia-only" data-i18n-title="reorder.up" disabled>▲</button>
+              <button id="btn-move-down" class="btn tiny move gia-only" data-i18n-title="reorder.down" disabled>▼</button>
+              <button id="btn-rename-sel" class="btn tiny gia-only" data-i18n="rename.selected" disabled></button>
               <div id="rename-pop" class="rename-pop hidden">
                 <input type="text" id="rename-pop-input" spellcheck="false">
               </div>
             </div>
           </div>
 
-          <div id="split-bar">
+          <div id="split-bar" class="gia-only">
             <span id="split-info" class="split-info"></span>
             <button id="btn-split" class="btn primary" disabled></button>
           </div>
 
+          <fieldset id="gil-ops" class="gil-only">
+            <legend data-i18n="gil.panel.extraction"></legend>
+            <div class="gil-ops-row">
+              <span id="gil-op-info" class="split-info"></span>
+              <button id="btn-gil-undo" class="btn ghost tiny" data-i18n="gil.btn.undo" disabled></button>
+              <button id="btn-gil-redo" class="btn ghost tiny" data-i18n="gil.btn.redo" disabled></button>
+            </div>
+            <div class="gil-actions-row">
+              <button id="btn-gil-split-sel" class="btn primary" data-i18n="gil.btn.splitSel" disabled></button>
+              <button id="btn-gil-split-parents" class="btn primary" data-i18n="gil.btn.splitParents" disabled></button>
+            </div>
+            <div class="gil-opts-row">
+              <label class="opt-label" data-i18n-title="gil.opt.collisionTip"><input type="checkbox" id="gil-opt-collision"> <span data-i18n="gil.opt.collision"></span></label>
+              <label class="opt-label" data-i18n-title="gil.opt.removeParentTip"><input type="checkbox" id="gil-opt-remove-parent"> <span data-i18n="gil.opt.removeParent"></span></label>
+            </div>
+          </fieldset>
+
           <div id="dec-table-wrap">
             <table id="dec-table">
               <thead>
-                <tr><th class="col-drag"></th><th class="col-check"></th><th class="num col-idx">#</th><th data-i18n="table.name"></th><th class="num" data-i18n="table.id"></th></tr>
+                <tr>
+                  <th class="col-drag gia-only"></th>
+                  <th class="col-check"></th>
+                  <th class="num col-idx">#</th>
+                  <th data-i18n="table.name" data-sort="name"></th>
+                  <th class="num" data-i18n="table.id" data-sort="id"></th>
+                  <th class="num gil-only" data-i18n="gil.col.prefab" data-i18n-title="gil.col.prefabTip" data-sort="prefab"></th>
+                  <th class="gil-only" data-i18n="gil.col.collision" data-sort="coll"></th>
+                </tr>
               </thead>
               <tbody></tbody>
             </table>
-            <p class="hint table-hint" data-i18n="table.hint"></p>
-            <p class="hint table-hint" data-i18n="reorder.hint"></p>
+            <p class="hint table-hint gia-only" data-i18n="table.hint"></p>
+            <p class="hint table-hint gia-only" data-i18n="reorder.hint"></p>
+            <p class="hint table-hint gil-only" data-i18n="gil.table.hint"></p>
           </div>
         </section>
+
+        <div class="vsplit" data-panel="viewer"></div>
 
         <section id="viewer-panel">
           <div id="viewer-toolbar">
@@ -144,9 +188,9 @@
 
     <footer id="export-bar" class="hidden">
       <div class="export-summary">
-        <div class="chip"><b id="ex-models"></b><span data-i18n="export.models"></span></div>
-        <div class="chip"><b id="ex-selected"></b><span data-i18n="export.exported"></span></div>
-        <div class="chip"><b id="ex-splits"></b><span data-i18n="export.splits"></span></div>
+        <div class="chip"><b id="ex-models"></b><span data-i18n="export.models" data-i18n-gil="gil.objects.title"></span></div>
+        <div class="chip gia-only"><b id="ex-selected"></b><span data-i18n="export.exported"></span></div>
+        <div class="chip"><b id="ex-splits"></b><span data-i18n="export.splits" data-i18n-gil="gil.st.edits"></span></div>
         <div class="chip"><b id="ex-size"></b><span data-i18n="export.size"></span></div>
       </div>
       <div class="export-name">
@@ -161,6 +205,31 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+
+  <dialog id="confirm-modal" class="modal">
+    <h3 id="cm-head"></h3>
+    <div id="cm-body" class="modal-body"></div>
+    <div class="modal-actions">
+      <button id="cm-cancel" class="btn ghost" data-i18n="gil.btn.cancel"></button>
+      <button id="cm-ok" class="btn primary" data-i18n="gil.btn.continue"></button>
+    </div>
+  </dialog>
+
+  <dialog id="error-modal" class="modal">
+    <h3 data-i18n="gil.dlg.problem"></h3>
+    <div id="em-body" class="modal-body"></div>
+    <div class="modal-actions">
+      <button id="em-close" class="btn primary" data-i18n="gil.btn.close"></button>
+    </div>
+  </dialog>
+
+  <div id="progress-overlay" class="hidden">
+    <div class="progress-card">
+      <div id="progress-label" class="progress-label"></div>
+      <div class="progress-track"><div id="progress-bar"></div></div>
+    </div>
+  </div>
+
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

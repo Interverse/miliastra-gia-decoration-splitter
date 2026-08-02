@@ -88,10 +88,21 @@ export function num(v, opts) {
   return opts ? new Intl.NumberFormat(bcp47Of(current), opts).format(v) : nf.format(v);
 }
 
+// Optional key-variant suffix (e.g. 'gil' when a .gil file is loaded):
+// elements carrying data-i18n-<variant> use that key instead of data-i18n,
+// so mode-dependent labels stay in the markup with no duplicated elements.
+let variant = null;
+export function setI18nVariant(v) {
+  if (variant === v) return;
+  variant = v;
+  applyI18n(document);
+}
+
 // Apply the active dictionary to every bound element under root.
 export function applyI18n(root = document) {
   for (const el of root.querySelectorAll('[data-i18n]')) {
-    el.textContent = t(el.dataset.i18n);
+    const key = (variant && el.getAttribute(`data-i18n-${variant}`)) || el.dataset.i18n;
+    el.textContent = t(key);
   }
   for (const el of root.querySelectorAll('[data-i18n-title]')) {
     el.title = t(el.dataset.i18nTitle);

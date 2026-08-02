@@ -1,31 +1,43 @@
-# GIA Splitter
+# GIA / GIL Splitter
 
-An interactive, static **.gia splitting utility**. Load a `.gia` file, inspect each
-model's Decoration list, select any entries, and move them into a newly created
-model — as many times as you like — then download the updated file. Decoration
-entries keep their original order on both sides of every split, and **all data you
-don't touch is preserved byte-for-byte**, including fields and entry types the tool
-doesn't recognize.
+An interactive, static splitting utility for **both** Miliastra Wonderland asset
+formats — one unified editor that adapts to the loaded file type:
+
+- **`.gia` asset packs**: inspect each model's Decoration list, select any
+  entries, and move them into a newly created model — as many times as you
+  like — then download the updated file. Decoration entries keep their original
+  order on both sides of every split.
+- **`.gil` levels**: check parent objects, select any of their attached
+  decorations, and extract them into standalone world objects at the exact
+  same world position, rotation, scale, and collision state.
+
+In both modes, **all data you don't touch is preserved byte-for-byte**,
+including fields and entry types the tool doesn't recognize.
 
 Everything runs client-side in the browser — no server, nothing is uploaded.
+Files load via the picker, drag-and-drop anywhere on the page, or clipboard
+paste (Ctrl+V of a file copied from the OS).
 
 The interface is fully localized into 15 languages — the 14 officially supported
 by Genshin Impact plus Italian: English, 简体中文, 繁體中文, 日本語, 한국어,
 Français, Deutsch, Español, Português, Русский, ไทย, Tiếng Việt,
 Bahasa Indonesia, Türkçe, Italiano — with a runtime language selector in the
-top bar (no reload needed).
+top bar (no reload needed). The choice syncs across all Miliastra Toolkit
+sites via the shared `miliastra-lang` key.
 
-## Usage
+## Usage — .gia
 
-1. Open the site and drop a `.gia` file anywhere on the page (or click *Choose a .gia file*).
+1. Open the site and drop a `.gia` file anywhere on the page (or click *Choose a .gia / .gil file*).
 2. Pick a model in the left-hand list (each shows its Decoration entry count).
    Every model also has an **export checkbox** right in the sidebar — checked models
    are included in the download; unchecked ones are dimmed. This is independent of
    which model is open for viewing.
-3. Select entries in the Decoration table — click to select, **Ctrl+click** to toggle,
-   **Shift+click** for ranges, or use the checkboxes / *Select all*. The bar above the
-   table shows exactly how many entries will move and the name of the model they'll
-   move into.
+3. Select entries in the Decoration table — a click **toggles** a row without
+   resetting the rest of the selection, and **Shift+click** inverts the whole
+   range from the last-clicked row (so toggling a row on and shift-clicking
+   selects the range; toggling one off and shift-clicking deselects it), or
+   use the checkboxes / *Select all*. The bar above the table shows exactly
+   how many entries will move and the name of the model they'll move into.
 4. Hit **Split selected**. The new model appears in the list right after its source;
    you can keep splitting any model, including newly created ones.
    You can also **reorder** a model's Decoration entries: drag rows (dragging a
@@ -40,20 +52,58 @@ top bar (no reload needed).
    **Rename** any model or decoration by double-clicking its name, or select
    multiple entries and use **Rename selected** to give them all the same name
    in one undoable operation (Ctrl+Z / Ctrl+Y).
-   The **3D viewer** on the right shows every decoration of the open model as a
-   point at its world position: left-drag box-selects (Ctrl adds, Alt subtracts,
-   Shift toggles), right-drag orbits, middle-drag pans, and the selection stays
-   in sync with the table both ways. The toolbar offers search-with-highlight,
-   frame selected/all, grid/axis toggles, labels (names or indices), point
-   size/colors, hide/isolate controls, selection stats with a coordinate
-   readout, and quick-view buttons with an orientation gizmo.
 5. Choose which models the download includes using the sidebar checkboxes, with
    **Select all / Deselect all** at the top of the Models panel. Badges mark newly
    created models and node-graph owners. The selection persists until you change
    it, load another file, or Reset; newly created models are included by default.
 6. Download the resulting `.gia` (or *Reset* to discard all changes).
 
-## How splitting works
+## Usage — .gil
+
+1. Drop (or pick, or paste) a `.gil` level. The left panel lists every object
+   that contains decorations, with search, sorting, and an optional *Show all
+   objects* view of the whole level (virtualized for large files).
+2. Click parent objects to check them (click selects one, Ctrl+click toggles,
+   Shift+click selects a range; the checkboxes always toggle); the table shows
+   the focused parent's decorations (name, ID, prefab, collision), sortable by
+   any column — there a click **toggles** a row without resetting the rest,
+   and Shift+click inverts the whole range from the last click. Decoration selections
+   **persist across parent objects** — switching or unchecking parents never
+   discards them; a dot marks sidebar rows holding selected decorations, and
+   the Extraction bar summarizes the global state ("12 decorations selected
+   across 3 parent objects"). *Separate Selected Decorations* extracts every
+   selected decoration wherever it lives; in `.gia` mode, each model likewise
+   remembers its selection so switching models never discards it.
+3. Use the **Extraction** bar:
+   - **Separate Selected Decorations** — extracts exactly the decorations
+     selected in the table. Unselected decorations stay attached; the parent's
+     decoration list is rewritten, not cleared.
+   - **Separate All Decorations from Selected Parents** — extracts every
+     decoration of the checked parents.
+   Two persisted options sit below the buttons: *Enable Collision for
+   Extracted Objects* (default on) and *Remove Parent Object After Extraction*
+   (default off — a parent is deleted only if it ends up empty **and** a
+   level-wide reference scan proves nothing else references it).
+4. Before anything is modified, a review dialog lists warnings — most notably
+   the game's **zoom limit**: extracted objects whose estimated world scale
+   exceeds 50 on any axis are listed with their parent and the offending
+   axes. Continue or cancel; cancel changes nothing.
+5. **Undo/redo** (buttons or Ctrl+Z / Ctrl+Y) restores exact byte-level state
+   through unlimited operations. Long operations show a progress bar and keep
+   the page responsive (an 11 MB level with ~8,000 decorations splits in
+   about a second).
+6. Download the modified `.gil` — a file downloaded without edits is
+   byte-identical to the input.
+
+In both modes the **3D viewer** on the right shows the open model's / focused
+parent's decorations as points at their world positions: left-drag box-selects
+(Ctrl adds, Alt subtracts, Shift toggles), right-drag orbits, middle-drag pans,
+and the selection stays in sync with the table both ways. The toolbar offers
+search-with-highlight, frame selected/all, grid/axis toggles, labels, point
+size/colors, hide/isolate controls, selection stats with a coordinate readout,
+and quick-view buttons with an orientation gizmo.
+
+## How .gia splitting works
 
 The splitter never decodes Decoration contents — it performs targeted protobuf
 surgery on the container and copies everything else verbatim:
@@ -81,9 +131,29 @@ surgery on the container and copies everything else verbatim:
 - The engine handles both observed model-entry layouts (generated class-1 models
   and class-3 game objects such as Empty Models), so files containing either kind
   load and split correctly.
-- The 3D viewer only READS decoration positions (transform component 5/1) for
-  display — nothing it does feeds back into serialization, so the
-  byte-preservation guarantees are unaffected.
+- The 3D viewer only READS decoration positions for display — nothing it does
+  feeds back into serialization, so the byte-preservation guarantees are
+  unaffected.
+
+## How .gil extraction works
+
+The `.gil` engine (`js/gil/`, verified byte-for-byte against game-produced
+reference files) mutates only three top-level containers — world objects,
+registry, and decorations — and preserves everything else, including unknown
+fields, exactly:
+
+- **Transforms** are composed as `worldPos = parentPos + parentRot × (parentScale
+  ⊙ localPos)`, `worldRot = parentRot ∘ localRot` (Euler Z-X-Y degrees),
+  `worldScale = parentScale ⊙ localScale` — bit-exact in float32 against
+  game-authored reference output.
+- **New object ids** follow the game's allocation (highest existing id in the
+  `0x4040xxxx` space + 1); the new objects are registered in the level's
+  world-object registry group.
+- A parent loses exactly one thing: the extracted ids from its decoration-id
+  list. Parent removal is gated by a **single-pass** level-wide reference scan.
+- **Undo/redo snapshots** are zero-copy references to the three containers'
+  raw bytes; restoring a pre-edit snapshot reproduces the original file
+  byte-identically.
 
 ## Localization
 
@@ -92,14 +162,17 @@ surgery on the container and copies everything else verbatim:
   (via `Intl.NumberFormat`), `data-i18n` / `data-i18n-title` /
   `data-i18n-placeholder` bindings for static DOM, and an `onLangChange`
   hook that re-renders dynamic UI. Switching languages never reloads the page.
+  Mode-dependent labels use `data-i18n-gil` overrides on the same elements.
 - English ships in the bundle and is the **fallback for every key**, so missing
   translations degrade to English — never to raw keys or blanks.
 - Other locales load on demand from `js/locales/<code>.js`. **Adding a language
   = adding one file + one row in `LANGS`** — no application code changes.
-- The saved choice persists in localStorage; first visit auto-detects from the
+- The saved choice persists in localStorage (shared `miliastra-lang` key,
+  synced live across toolkit sites and tabs); first visit auto-detects from the
   browser language (including zh-Hans/zh-Hant disambiguation).
 - Engine errors carry i18n codes (`err.i18n`) so validation messages localize
-  while logs and tests keep English text.
+  while logs and tests keep English text; `.gil` warning/error codes map to
+  `gil.w.*` / `gil.e.*` keys.
 - Font stacks cover Latin, Cyrillic, Vietnamese, CJK, and Thai on all major
   OSes, with per-language `:lang()` preferences and extra Thai line-height;
   layouts wrap gracefully for long German/Russian strings.
@@ -108,17 +181,21 @@ surgery on the container and copies everything else verbatim:
 
 | Path | Role |
 |---|---|
-| `index.html`, `css/style.css` | UI shell (master-detail: model list + Decoration table) |
-| `js/app.js` | app logic (import → select → split → download) |
-| `js/gia-splitter.js` | `GiaSession` — the byte-preserving split engine (self-contained, no dependencies) |
-| `js/viewer3d.js` | 3D decoration viewer (three.js points, box selection, camera tooling) |
+| `index.html`, `css/style.css` | UI shell (master-detail: object/model list + decoration table), mode-adaptive via `body.mode-gia` / `body.mode-gil` |
+| `js/app.js` | app logic for both modes (import → select → split/extract → download) |
+| `js/gia-splitter.js` | `GiaSession` — the byte-preserving .gia split engine (self-contained, no dependencies) |
+| `js/gil-splitter.js` | `GilSession` — .gil session wrapper (views, operations, zero-copy undo/redo) |
+| `js/gil/` | the verified .gil engine: wire format (`gil.js`), level model (`model.js`), extraction (`split.js`) — do not modify |
+| `js/viewer3d.js` | 3D decoration viewer (three.js points, box selection, camera tooling), shared by both modes |
 | `js/i18n.js`, `js/locales/*.js` | localization system + the 15 language dictionaries |
-| `tools/test-splitter.mjs` | verification suite (`node tools/test-splitter.mjs`) |
+| `tools/test-splitter.mjs` | .gia verification suite (`node tools/test-splitter.mjs`) |
+| `tools/test-gil.mjs` | .gil engine verification suite (`node tools/test-gil.mjs`) |
 | `tools/gia-parser.js` | legacy geometry-aware parser, used only as an independent cross-check in tests |
-| `reference/` | format handoff docs and sample .gia fixtures |
+| `reference/` | format handoff docs and sample .gia/.gil fixtures |
 
-Format details (header layout, entry structure, gotchas) are documented in
-[reference/docs/HANDOFF-gia-splitter.md](reference/docs/HANDOFF-gia-splitter.md).
+Format details are documented in
+[reference/docs/HANDOFF-gia-splitter.md](reference/docs/HANDOFF-gia-splitter.md)
+(.gia) and the source `SplitGilDecorations` project's `GIL-FORMAT.md` (.gil).
 
 ## Run locally
 
@@ -135,24 +212,29 @@ No build step; the only dependency is three.js, loaded from the jsDelivr CDN via
 
 ```sh
 node tools/test-splitter.mjs
+node tools/test-gil.mjs
 ```
 
-Verifies, against the sample fixtures: lossless protobuf re-encoding, byte-identical
-no-op serialization, order preservation for scattered selections, parent-reference
-correctness, byte-identity of node graphs and unmoved Decoration entries, repeated
-splits (including splitting a newly created model), selective export (omitted models
-and their entries, unconditional preservation of non-decoration entries, exporting
-only a new model), reordering (order preservation, no-op detection, byte-identity of
-every decoration entry, reorder+split composition), loading and splitting class-3
-game-object files, the rename and cross-model move actions, and edge cases such
-as moving every entry out of a model.
+`test-splitter.mjs` verifies, against the sample fixtures: lossless protobuf
+re-encoding, byte-identical no-op serialization, order preservation for
+scattered selections, parent-reference correctness, byte-identity of node
+graphs and unmoved Decoration entries, repeated splits, selective export,
+reordering, class-3 game-object files, rename and cross-model moves, and edge
+cases such as moving every entry out of a model.
+
+`test-gil.mjs` verifies, against the sample `.gil` fixtures: byte-for-byte
+round-trips, split correctness against game-authored standalone counterparts
+(bit-exact world transforms), minimal parent mutation, registry updates, id
+allocation, collision encoding, parent-removal reference safety, and the
+zoom-limit warning. Pass a directory argument to use different reference files;
+the 11 MB performance section runs only when `Cozy Disc Golf.gil` is present.
 
 ## Deploy to GitHub Pages
 
 ```sh
 git init
 git add .
-git commit -m "GIA Splitter"
+git commit -m "GIA / GIL Splitter"
 git branch -M main
 git remote add origin https://github.com/<you>/<repo>.git
 git push -u origin main
