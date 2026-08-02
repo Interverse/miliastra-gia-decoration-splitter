@@ -174,4 +174,6 @@ export default {
   'gil.sum.parentsSel': '부모 오브젝트 {n}개 선택됨',
   'gil.sum.decosSel': '부모 오브젝트 {k}개에 걸쳐 장식 {n}개 선택됨',
   'sel.acrossModels': '모델 {k}개에 걸쳐 항목 {n}개 선택됨',
+  'gil.op.labelReorder': '장식 {n}개 순서 변경',
+  'gil.op.labelRename': '장식 {n}개 이름 변경',
 };

@@ -174,4 +174,6 @@ export default {
   'gil.sum.parentsSel': '{n} objek induk dipilih',
   'gil.sum.decosSel': '{n} dekorasi dipilih di {k} objek induk',
   'sel.acrossModels': '{n} entri dipilih di {k} model',
+  'gil.op.labelReorder': 'Menyusun ulang {n} dekorasi',
+  'gil.op.labelRename': 'Mengganti nama {n} dekorasi',
 };

@@ -13,8 +13,19 @@
 // mutation and never edits them in place, so snapshots are zero-copy and
 // restoring one reproduces the pre-edit file byte-identically.
 
-import { parseGilContainer, buildGilContainer, fieldString } from './gil/gil.js';
-import { parseLevel } from './gil/model.js';
+import {
+  parseGilContainer,
+  buildGilContainer,
+  fieldString,
+  fieldVarint,
+  parseMessage,
+  encodeMessage,
+  msgField,
+  bytesField,
+  varintField,
+  encodePackedVarints,
+} from './gil/gil.js';
+import { parseLevel, COMP_A_PAYLOAD, readComponent } from './gil/model.js';
 import {
   planSplit,
   applySplit,
@@ -201,6 +212,190 @@ export class GilSession {
     this._undo.push({ label, snap });
     this._redo.length = 0;
     return summary;
+  }
+
+  /**
+   * Move the decorations at `indices` (positions in the parent's current
+   * list) so they sit, in their current relative order, starting at
+   * `targetIndex` — expressed in the list as it stands AFTER the moved
+   * entries are lifted out (same semantics as GiaSession.moveDecorations).
+   *
+   * Byte-level: only the parent's decoration-id list (component A/40 packed
+   * field 501) is rewritten; the decoration entries and everything else in
+   * the file keep their bytes. The operation is pushed onto the shared
+   * undo stack. Returns {start, count, changed} or null when nothing valid
+   * was requested; a move that lands the list in the same order is not an
+   * edit. Bails (null) if any listed decoration id fails to resolve, since
+   * row indices would not match list positions in that (error) case.
+   */
+  reorderDecorations(parentId, indices, targetIndex) {
+    const L = this.level;
+    const parent = L.objectById(parentId);
+    if (!parent) return null;
+    const list = parent.decorationIds;
+    const byId = this._decoMap();
+    if (!list.length || !list.every((id) => byId.has(id))) return null;
+    const picked = [...new Set(indices)].sort((a, b) => a - b);
+    if (!picked.length) return null;
+    if (picked[0] < 0 || picked[picked.length - 1] >= list.length) return null;
+
+    const set = new Set(picked);
+    const moving = picked.map((i) => list[i]);
+    const rest = list.filter((_, i) => !set.has(i));
+    const at = Math.max(0, Math.min(Math.floor(targetIndex), rest.length));
+    const next = [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+    if (next.every((id, i) => id === list[i])) {
+      return { start: at, count: moving.length, changed: false };
+    }
+
+    // Rewrite the packed 501 list inside the parent's comp-40 component,
+    // container 5 — every other byte passes through verbatim. The container
+    // raw is REPLACED (never edited in place) so undo snapshots stay valid.
+    const snap = this._snapshot();
+    const objCont = L.objectContainerField;
+    const fields = parseMessage(objCont.raw);
+    let done = false;
+    for (let i = 0; i < fields.length && !done; i++) {
+      const f = fields[i];
+      if (f.num !== 1 || f.wire !== 2) continue;
+      let of;
+      try {
+        of = parseMessage(f.raw);
+      } catch {
+        continue;
+      }
+      const idF = of.find((x) => x.num === 1 && x.wire === 0);
+      if (!idF || fieldVarint(idF) !== parentId) continue;
+      for (let j = 0; j < of.length; j++) {
+        const cf = of[j];
+        if (cf.num !== 5 || cf.wire !== 2) continue;
+        let c;
+        try {
+          c = readComponent(cf, COMP_A_PAYLOAD);
+        } catch {
+          continue;
+        }
+        if (c.type !== 40 || !c.payload || !c.payload.raw.length) continue;
+        const kept = parseMessage(c.payload.raw).map((pf) =>
+          pf.num === 501 && pf.wire === 2 ? bytesField(501, encodePackedVarints(next)) : pf
+        );
+        const newComp = c.fields.map((x) =>
+          x === c.payload ? bytesField(c.payloadFieldNum, encodeMessage(kept)) : x
+        );
+        of[j] = msgField(5, newComp);
+        fields[i] = msgField(1, of);
+        done = true;
+        break;
+      }
+    }
+    if (!done) return null;
+    objCont.raw = encodeMessage(fields);
+    L.invalidate();
+    this._undo.push({
+      label: { key: 'gil.op.labelReorder', params: { n: moving.length } },
+      snap,
+    });
+    this._redo.length = 0;
+    return { start: at, count: moving.length, changed: true };
+  }
+
+  /**
+   * Rename every decoration in `decoIds` to the same (trimmed) name, as ONE
+   * undoable operation on the shared snapshot stack. Byte-level: only the
+   * name field (field 1) inside each decoration's type-1 component payload
+   * is replaced — unknown payload subfields and everything else in the file
+   * survive verbatim. Decorations already carrying the name are skipped; a
+   * missing name field or name component is created in the shape the engine
+   * itself builds for extracted objects. Duplicate names are allowed (the
+   * format has no uniqueness rule). Returns {changed} or null if nothing
+   * needed changing.
+   */
+  renameDecorations(decoIds, name) {
+    name = String(name ?? '').trim();
+    if (!name) return null;
+    const byId = this._decoMap();
+    const targets = new Set(
+      [...new Set(decoIds)].filter((id) => byId.has(id) && (byId.get(id).name ?? '') !== name)
+    );
+    if (!targets.size) return null;
+
+    const snap = this._snapshot();
+    const cont = this.level.decoContainerField;
+    const fields = parseMessage(cont.raw);
+    const nameField = { num: 1, wire: 2, raw: new TextEncoder().encode(name) };
+    let changed = 0;
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      if (f.num !== 2 || f.wire !== 2) continue;
+      let ef;
+      try {
+        ef = parseMessage(f.raw);
+      } catch {
+        continue;
+      }
+      const idF = ef.find((x) => x.num === 1 && x.wire === 0);
+      if (!idF || !targets.has(fieldVarint(idF))) continue;
+
+      let done = false;
+      for (let j = 0; j < ef.length && !done; j++) {
+        const cf = ef[j];
+        if (cf.num !== 4 || cf.wire !== 2) continue;
+        let c;
+        try {
+          c = readComponent(cf, COMP_A_PAYLOAD);
+        } catch {
+          continue;
+        }
+        if (c.type !== 1) continue;
+        let payloadFields = [];
+        if (c.payload && c.payload.raw.length) {
+          try {
+            payloadFields = parseMessage(c.payload.raw);
+          } catch {
+            payloadFields = [];
+          }
+        }
+        let saw = false;
+        const newPayload = payloadFields.map((pf) =>
+          pf.num === 1 && pf.wire === 2 ? ((saw = true), nameField) : pf
+        );
+        if (!saw) newPayload.unshift(nameField);
+        const pfNum = c.payloadFieldNum ?? COMP_A_PAYLOAD[1];
+        const newComp = c.payload
+          ? c.fields.map((x) => (x === c.payload ? bytesField(pfNum, encodeMessage(newPayload)) : x))
+          : [...c.fields, bytesField(pfNum, encodeMessage(newPayload))];
+        ef[j] = msgField(4, newComp);
+        done = true;
+      }
+      if (!done) {
+        // no name component at all: create one right after the last existing
+        // component (or the prefab/id fields), matching the observed layout
+        const comp = msgField(4, [
+          varintField(1, 1),
+          bytesField(COMP_A_PAYLOAD[1], encodeMessage([nameField])),
+        ]);
+        let insertAt = ef.length;
+        for (let j = ef.length - 1; j >= 0; j--) {
+          if (ef[j].num === 4) {
+            insertAt = j + 1;
+            break;
+          }
+          if (ef[j].num === 1 || ef[j].num === 2) {
+            insertAt = j + 1;
+            break;
+          }
+        }
+        ef.splice(insertAt, 0, comp);
+      }
+      fields[i] = msgField(2, ef);
+      changed++;
+    }
+    if (!changed) return null;
+    cont.raw = encodeMessage(fields);
+    this.level.invalidate();
+    this._undo.push({ label: { key: 'gil.op.labelRename', params: { n: changed } }, snap });
+    this._redo.length = 0;
+    return { changed };
   }
 
   // ---------- undo / redo (exact byte-level state) ----------

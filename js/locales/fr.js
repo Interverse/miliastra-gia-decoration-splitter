@@ -183,4 +183,6 @@ export default {
   'gil.sum.parentsSel': '{n} objets parents sélectionnés',
   'gil.sum.decosSel': '{n} décorations sélectionnées dans {k} objets parents',
   'sel.acrossModels': '{n} entrées sélectionnées dans {k} modèles',
+  'gil.op.labelReorder': 'Réorganiser {n} décoration(s)',
+  'gil.op.labelRename': 'Renommer {n} décoration(s)',
 };

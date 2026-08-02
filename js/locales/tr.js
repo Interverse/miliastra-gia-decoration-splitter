@@ -174,4 +174,6 @@ export default {
   'gil.sum.parentsSel': '{n} üst nesne seçili',
   'gil.sum.decosSel': '{k} üst nesnede {n} dekorasyon seçili',
   'sel.acrossModels': '{k} modelde {n} girdi seçili',
+  'gil.op.labelReorder': '{n} dekorasyonu yeniden sırala',
+  'gil.op.labelRename': '{n} dekorasyonu yeniden adlandır',
 };

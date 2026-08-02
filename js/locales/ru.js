@@ -193,4 +193,6 @@ export default {
   'gil.sum.parentsSel': 'Выбрано родительских объектов: {n}',
   'gil.sum.decosSel': 'Выбрано декораций: {n} (в {k} родительских объектах)',
   'sel.acrossModels': 'Выбрано записей: {n} (в {k} моделях)',
+  'gil.op.labelReorder': 'Изменить порядок декораций: {n}',
+  'gil.op.labelRename': 'Переименовать декорации: {n}',
 };

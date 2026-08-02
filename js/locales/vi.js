@@ -174,4 +174,6 @@ export default {
   'gil.sum.parentsSel': 'Đã chọn {n} vật thể cha',
   'gil.sum.decosSel': 'Đã chọn {n} vật trang trí trong {k} vật thể cha',
   'sel.acrossModels': 'Đã chọn {n} mục trong {k} mô hình',
+  'gil.op.labelReorder': 'Sắp xếp lại {n} vật trang trí',
+  'gil.op.labelRename': 'Đổi tên {n} vật trang trí',
 };

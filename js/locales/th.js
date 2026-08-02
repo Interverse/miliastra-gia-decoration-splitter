@@ -174,4 +174,6 @@ export default {
   'gil.sum.parentsSel': 'เลือกวัตถุแม่แล้ว {n} ชิ้น',
   'gil.sum.decosSel': 'เลือกของตกแต่งแล้ว {n} ชิ้นใน {k} วัตถุแม่',
   'sel.acrossModels': 'เลือกรายการแล้ว {n} รายการใน {k} โมเดล',
+  'gil.op.labelReorder': 'จัดลำดับของตกแต่งใหม่ {n} ชิ้น',
+  'gil.op.labelRename': 'เปลี่ยนชื่อของตกแต่ง {n} ชิ้น',
 };

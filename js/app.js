@@ -642,16 +642,31 @@ function syncSelection() {
 const drag = { indices: null, target: null, marked: null };
 
 function onDragStart(i, e) {
-  // dragging a selected row moves the whole selection; otherwise just this row
-  if (!state.sel.has(i)) {
-    state.sel = new Set([i]);
-    state.anchor = i;
-    syncSelection();
+  if (state.mode === 'gil') {
+    // dragging a selected row moves the focused parent's selected rows (the
+    // id-based cross-parent selection itself is untouched); dragging an
+    // unselected row moves just that row without altering the selection
+    const g = state.gil;
+    const rowSelected = g.decoSel.has(Number(state.rows[i]?.dataset.decoId));
+    drag.indices = rowSelected
+      ? state.rows
+          .filter((tr) => g.decoSel.has(Number(tr.dataset.decoId)))
+          .map((tr) => Number(tr.dataset.index))
+          .sort((a, b) => a - b)
+      : [i];
+  } else {
+    // dragging a selected row moves the whole selection; otherwise just this row
+    if (!state.sel.has(i)) {
+      state.sel = new Set([i]);
+      state.anchor = i;
+      syncSelection();
+    }
+    drag.indices = [...state.sel].sort((a, b) => a - b);
   }
-  drag.indices = [...state.sel].sort((a, b) => a - b);
   e.dataTransfer.setData('text/plain', '');
   e.dataTransfer.effectAllowed = 'move';
   for (const idx of drag.indices) state.rows[idx]?.classList.add('dragging');
+  if (state.mode === 'gil') return; // no cross-parent drop targets in .gil mode
   els.modelList.classList.add('dec-drag'); // other models light up as drop targets
   // immediately dim models that cannot accept this many entries
   const models = state.session.models;
@@ -701,7 +716,8 @@ function onDrop(e) {
   // rows lifted out (the engine's coordinate system)
   const raw = drag.target.index + (drag.target.before ? 0 : 1);
   const at = raw - drag.indices.filter((i) => i < raw).length;
-  applyMove(drag.indices, at);
+  if (state.mode === 'gil') applyGilMove(drag.indices, at);
+  else applyMove(drag.indices, at);
   endDrag();
 }
 
@@ -834,9 +850,10 @@ function commitRenameOp(indices, name) {
 
 els.btnRenameSel.addEventListener('click', (e) => {
   e.stopPropagation();
-  if (!state.sel.size) return;
+  const n = state.mode === 'gil' ? state.gil.decoSel.size : state.sel.size;
+  if (!n) return;
   els.renamePop.classList.remove('hidden');
-  els.renamePopInput.placeholder = t('rename.placeholder', { n: num(state.sel.size) });
+  els.renamePopInput.placeholder = t('rename.placeholder', { n: num(n) });
   els.renamePopInput.value = '';
   els.renamePopInput.focus();
 });
@@ -847,7 +864,9 @@ els.renamePopInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     const v = els.renamePopInput.value.trim();
     closeRenamePop();
-    if (v) commitRenameOp([...state.sel], v);
+    if (!v) return;
+    if (state.mode === 'gil') commitGilRename([...state.gil.decoSel], v);
+    else commitRenameOp([...state.sel], v);
   } else if (e.key === 'Escape') {
     closeRenamePop();
   }
@@ -1349,11 +1368,29 @@ function renderGilDetail() {
   }
   syncGilSortHeaders();
 
+  // drag-reordering only makes sense while the table shows file order; a
+  // sorted view hides the handles and disables dragging
+  const canDrag = g.decoSort === null;
   const frag = document.createDocumentFragment();
   for (const d of rows) {
     const tr = document.createElement('tr');
     tr.dataset.index = d.index; // viewer point index (file order)
     tr.dataset.decoId = d.id;
+    tr.draggable = canDrag;
+    tr.addEventListener('dragstart', (e) => onDragStart(d.index, e));
+    tr.addEventListener('dragover', (e) => onDragOver(d.index, tr, e));
+    tr.addEventListener('drop', (e) => onDrop(e));
+    tr.addEventListener('dragend', endDrag);
+
+    const tdDrag = document.createElement('td');
+    tdDrag.className = 'col-drag';
+    if (canDrag) {
+      const handle = document.createElement('span');
+      handle.className = 'drag-handle';
+      handle.textContent = '⠿';
+      handle.title = t('reorder.dragTip');
+      tdDrag.appendChild(handle);
+    }
 
     const tdCheck = document.createElement('td');
     tdCheck.className = 'col-check';
@@ -1371,6 +1408,11 @@ function renderGilDetail() {
     tdName.className = 'dec-name';
     if (d.name) tdName.textContent = d.name;
     else { tdName.textContent = '—'; tdName.classList.add('muted'); }
+    tdName.title = t('rename.tip');
+    tdName.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      startInlineRename(tdName, d.name ?? '', (v) => commitGilRename([d.id], v));
+    });
 
     const tdId = document.createElement('td');
     tdId.className = 'num dec-id';
@@ -1385,7 +1427,7 @@ function renderGilDetail() {
     tdColl.className = d.collision ? 'coll-on' : 'coll-off';
     tdColl.textContent = d.collision ? t('gil.collision.on') : t('gil.collision.off');
 
-    tr.append(tdCheck, tdIdx, tdName, tdId, tdPrefab, tdColl);
+    tr.append(tdDrag, tdCheck, tdIdx, tdName, tdId, tdPrefab, tdColl);
     tr.addEventListener('click', (e) => onGilDecoClick(d.id, e));
     state.rows.push(tr);
     frag.appendChild(tr);
@@ -1547,6 +1589,7 @@ function renderGilOps() {
 
   els.btnGilUndo.disabled = !g.session.canUndo;
   els.btnGilRedo.disabled = !g.session.canRedo;
+  els.btnRenameSel.disabled = nSel === 0;
 }
 
 // ---------- extraction operations ----------
@@ -1683,6 +1726,43 @@ async function runGilSplit(mode, plan, removal, label) {
   } finally {
     hideProgress();
     splitting = false;
+  }
+}
+
+// Rename decorations by id (single inline rename and the bulk popover both
+// route here). Byte-preserving via the session; lands on the shared undo
+// stack, so Ctrl+Z / the Undo button revert it exactly.
+function commitGilRename(ids, name) {
+  const g = state.gil;
+  if (!g.session || !ids.length) return;
+  try {
+    const res = g.session.renameDecorations(ids, name);
+    if (!res) {
+      renderAll(); // restore the inline editor's original display
+      return;
+    }
+    toast(tn('toast.renamed', res.changed), true);
+    renderAll();
+  } catch (err) {
+    console.error(err);
+    showError(`<p>${escapeHtml(t('gil.opFailed'))}</p><p class="e">${escapeHtml(err.message)}</p>`);
+  }
+}
+
+// Reorder the focused parent's decoration list (byte-preserving; only the
+// parent's packed id list is rewritten). The id-based selection follows the
+// moved rows automatically, and the operation lands on the shared undo stack.
+function applyGilMove(indices, at) {
+  const g = state.gil;
+  const parent = effectiveGilParent();
+  if (!parent) return;
+  try {
+    const res = g.session.reorderDecorations(parent.id, indices, at);
+    if (!res || !res.changed) return;
+    renderAll();
+  } catch (err) {
+    console.error(err);
+    showError(`<p>${escapeHtml(t('gil.opFailed'))}</p><p class="e">${escapeHtml(err.message)}</p>`);
   }
 }
 

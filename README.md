@@ -74,6 +74,16 @@ sites via the shared `miliastra-lang` key.
    across 3 parent objects"). *Separate Selected Decorations* extracts every
    selected decoration wherever it lives; in `.gia` mode, each model likewise
    remembers its selection so switching models never discards it.
+   You can also **reorder** a parent's decorations by dragging rows (dragging
+   a selected row moves the focused parent's whole selected block) — only the
+   parent's decoration-id list is rewritten, every other byte survives, and
+   the move lands on the same undo/redo stack as extractions. Handles appear
+   only in file-order view; sort the table and dragging pauses until you
+   return to file order (third click on a column header).
+   **Rename** a decoration by double-clicking its name, or select several and
+   use **Rename selected** to give them all the same name in one undoable
+   operation — only the name field inside each decoration's name component is
+   rewritten, and extracted objects carry their renamed names.
 3. Use the **Extraction** bar:
    - **Separate Selected Decorations** — extracts exactly the decorations
      selected in the table. Unselected decorations stay attached; the parent's

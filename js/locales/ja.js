@@ -174,4 +174,6 @@ export default {
   'gil.sum.parentsSel': '親オブジェクトを {n} 個選択中',
   'gil.sum.decosSel': '{k} 個の親オブジェクトにわたり {n} 個のデコレーションを選択中',
   'sel.acrossModels': '{k} 個のモデルにわたり {n} 件の項目を選択中',
+  'gil.op.labelReorder': 'デコレーション {n} 個を並べ替え',
+  'gil.op.labelRename': 'デコレーション {n} 個の名前を変更',
 };

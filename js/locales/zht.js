@@ -174,4 +174,6 @@ export default {
   'gil.sum.parentsSel': '已選 {n} 個父物件',
   'gil.sum.decosSel': '已選 {n} 個裝飾，分佈於 {k} 個父物件',
   'sel.acrossModels': '已選 {n} 個條目，分佈於 {k} 個模型',
+  'gil.op.labelReorder': '重新排序 {n} 個裝飾',
+  'gil.op.labelRename': '重新命名 {n} 個裝飾',
 };
